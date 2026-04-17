@@ -137,6 +137,7 @@ let _loadGen = 0;
 
 // ─── ONNX Runtime ────────────────────────────────────────────────────────────
 let ortSession = null;
+let ortReady = false;
 
 async function loadModel() {
   // WASM binary fetches must share the CDN origin used by the JS bundle.
@@ -198,7 +199,7 @@ async function loadModel() {
 }
 
 async function runDenoiser(pixels, w, h) {
-  if (!ortSession) throw new Error(t('model-not-ready'));
+  if (!ortReady) throw new Error(t('model-not-ready'));
 
   const inputName  = ortSession.inputNames[0];
   const outputName = ortSession.outputNames[0];
@@ -668,6 +669,7 @@ async function main() {
   try {
     await loadModel();
     await warmUp();
+    ortReady = true;
   } catch(e) {
     console.error(e);
     if (/HTTP|fetch|load|404/i.test(e.message)) $('notice').style.display = 'block';
