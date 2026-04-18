@@ -193,38 +193,49 @@ async function loadModel() {
     enableMemPattern: true,
   };
 
-  // 1. WebGPU – fastest when a discrete or integrated GPU is available.
-  if ('gpu' in navigator) {
-    try {
-      ortSession = await ort.InferenceSession.create(modelPath, {
-        ...baseOpts,
-        executionProviders: ['webgpu'],
-      });
-      return;
-    } catch(e) { console.warn('[ORT] WebGPU unavailable:', e.message); }
+  const ua = navigator.userAgent;
+  // Safari includes "Safari" but not "Chrome"; covers both macOS and iOS.
+  const isSafari  = ua.includes('Safari') && !ua.includes('Chrome');
+  // Android Chrome: NNAPI (WebNN) is unreliable across devices and GPU overhead
+  // for a model this small doesn't pay off on shared mobile memory bandwidth.
+  const useGPU    = !isMobile;
+
+  if (useGPU || isSafari) {
+    // 1. WebNN GPU – native OS ML API (DirectML on Windows, Core ML on Apple).
+    //    Lowest overhead for small models; Core ML is especially fast on Apple silicon.
+    if ('ml' in navigator) {
+      try {
+        ortSession = await ort.InferenceSession.create(modelPath, {
+          ...baseOpts,
+          executionProviders: [{ name: 'webnn', deviceType: 'gpu', powerPreference: 'default' }],
+        });
+        return;
+      } catch(e) { console.warn('[ORT] WebNN GPU unavailable:', e.message); }
+
+      // 2. WebNN CPU – native OS ML API on CPU.
+      try {
+        ortSession = await ort.InferenceSession.create(modelPath, {
+          ...baseOpts,
+          executionProviders: [{ name: 'webnn', deviceType: 'cpu', powerPreference: 'default' }],
+        });
+        return;
+      } catch(e) { console.warn('[ORT] WebNN CPU unavailable:', e.message); }
+    }
+
+    // 3. WebGPU – Metal on Safari, Dawn on Chromium, available on Firefox too.
+    if ('gpu' in navigator) {
+      try {
+        ortSession = await ort.InferenceSession.create(modelPath, {
+          ...baseOpts,
+          executionProviders: ['webgpu'],
+        });
+        return;
+      } catch(e) { console.warn('[ORT] WebGPU unavailable:', e.message); }
+    }
   }
 
-  // 2. WebNN GPU – native OS ML API on GPU (DirectML / Core ML / etc.).
-  if ('ml' in navigator) {
-    try {
-      ortSession = await ort.InferenceSession.create(modelPath, {
-        ...baseOpts,
-        executionProviders: [{ name: 'webnn', deviceType: 'gpu', powerPreference: 'default' }],
-      });
-      return;
-    } catch(e) { console.warn('[ORT] WebNN GPU unavailable:', e.message); }
-
-    // 3. WebNN CPU – native OS ML API on CPU.
-    try {
-      ortSession = await ort.InferenceSession.create(modelPath, {
-        ...baseOpts,
-        executionProviders: [{ name: 'webnn', deviceType: 'cpu', powerPreference: 'default' }],
-      });
-      return;
-    } catch(e) { console.warn('[ORT] WebNN CPU unavailable:', e.message); }
-  }
-
-  // 4. WASM – portable, uses SIMD + threads when the browser supports them.
+  // 4. WASM – SIMD + threads when available.
+  //    Primary path on mobile; final fallback elsewhere.
   try {
     ortSession = await ort.InferenceSession.create(modelPath, {
       ...baseOpts,
@@ -233,7 +244,7 @@ async function loadModel() {
     return;
   } catch(e) { console.warn('[ORT] WASM unavailable:', e.message); }
 
-  throw new Error('No supported execution provider found (tried WebGPU, WebNN, WASM).');
+  throw new Error('No supported execution provider found (tried WebNN, WebGPU, WASM).');
 }
 
 // Returns the grid of tile start positions along one axis.
@@ -349,6 +360,7 @@ async function runDenoiser(pixels, w, h) {
       }
 
       setProgress(Math.round(++done / total * 99));
+      await tick();
     }
   }
 
