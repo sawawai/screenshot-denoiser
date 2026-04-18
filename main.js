@@ -75,10 +75,11 @@ const TX = {
     'hint-key-hold':   '<kbd>Space</kbd>',
     'hint-key-scroll': 'スクロール',
     'hint-key-dbl':       'ダブルクリック',
-    'drop-label-mobile':  'タップして画像を選択',
-    'drop-sub-mobile':    'PNG &nbsp;·&nbsp; JPG &nbsp;·&nbsp; WebP &nbsp;·&nbsp; BMP',
-    'drop-desc':          'スクリーンショットから動画圧縮ノイズを除去します<br>すべてブラウザ内で完結します',
-    'mob-tap-hint':       'タップして処理前後を比較',
+    'drop-label-mobile':   'タップして画像を選択',
+    'drop-sub-mobile':     'PNG &nbsp;·&nbsp; JPG &nbsp;·&nbsp; WebP &nbsp;·&nbsp; BMP',
+    'drop-desc':           'スクリーンショットから動画圧縮ノイズを除去します<br>すべてブラウザ内で完結します',
+    'mob-tap-hint':        'タップして処理前後を比較',
+    'drop-label-loading':  '読み込み中…',
   },
   en: {
     'title':           'Screenshot Denoiser',
@@ -98,10 +99,11 @@ const TX = {
     'hint-key-hold':   '<kbd>Space</kbd>',
     'hint-key-scroll': 'Scroll',
     'hint-key-dbl':       'Double-click',
-    'drop-label-mobile':  'Tap to choose an image',
-    'drop-sub-mobile':    'PNG &nbsp;·&nbsp; JPG &nbsp;·&nbsp; WebP &nbsp;·&nbsp; BMP',
-    'drop-desc':          'Removes video compression artifacts from screenshots.<br>Runs entirely in the browser.',
-    'mob-tap-hint':       'Tap to compare',
+    'drop-label-mobile':   'Tap to choose an image',
+    'drop-sub-mobile':     'PNG &nbsp;·&nbsp; JPG &nbsp;·&nbsp; WebP &nbsp;·&nbsp; BMP',
+    'drop-desc':           'Removes video compression artifacts from screenshots.<br>Runs entirely in the browser.',
+    'mob-tap-hint':        'Tap to compare',
+    'drop-label-loading':  'Initializing…',
   },
 };
 
@@ -147,6 +149,8 @@ function applyLang() {
     tDropSub.innerHTML   = t('drop-sub-mobile');
     updateViewLabel();
   }
+  if (dropIdle.classList.contains('model-loading'))
+    tDropLabel.textContent = t('drop-label-loading');
 }
 
 function setLang(l) {
@@ -170,6 +174,8 @@ let _loadGen = 0;
 // ─── ONNX Runtime ────────────────────────────────────────────────────────────
 let ortSession = null;
 let ortReady = false;
+let _ortLoadResolve, _ortLoadReject;
+const _ortLoadPromise = new Promise((res, rej) => { _ortLoadResolve = res; _ortLoadReject = rej; });
 
 async function loadModel() {
   // WASM binary fetches must share the CDN origin used by the JS bundle.
@@ -647,8 +653,9 @@ function deriveSaveName(name) {
 
 async function loadFile(file) {
   if (!file || !file.type.startsWith('image/')) return;
+  if (!ortReady) return;
   S.saveName = deriveSaveName(file.name);
-  setProgress(2);
+  if (ortReady) setProgress(2); else setProgressIndeterminate();
   try {
     const bmp = await createImageBitmap(file);
     const tmp = document.createElement('canvas');
@@ -674,6 +681,7 @@ async function loadFile(file) {
     setSaveEnabled(false); setNewEnabled(true);
     renderViewer();
     const gen = ++_loadGen;
+    await tick();
     await processAndShow(S.inputImg, gen);
   } catch(e) {
     console.error(e); setProgress(0); showError(e.message || 'An unexpected error occurred.');
@@ -681,8 +689,9 @@ async function loadFile(file) {
 }
 
 async function processAndShow(imgData, gen) {
-  if (!ortSession) return;
-  setProgressIndeterminate(); await tick();
+  try { await _ortLoadPromise; } catch { return; }
+  if (gen !== _loadGen) return;
+  await tick();
   const result = await runDenoiser(imgData.data, imgData.width, imgData.height);
   if (gen !== _loadGen) return;
   S.denoisedImg = result;
@@ -701,7 +710,7 @@ async function processAndShow(imgData, gen) {
 dropIdle.addEventListener('click', () => fileInput.click());
 dropIdle.addEventListener('dragover',  e => { e.preventDefault(); dropIdle.classList.add('drag-over'); });
 dropIdle.addEventListener('dragleave', ()  => dropIdle.classList.remove('drag-over'));
-dropIdle.addEventListener('drop', e => { e.preventDefault(); dropIdle.classList.remove('drag-over'); loadFile(e.dataTransfer.files[0]); });
+dropIdle.addEventListener('drop', e => { e.preventDefault(); e.stopPropagation(); dropIdle.classList.remove('drag-over'); loadFile(e.dataTransfer.files[0]); });
 fileInput.addEventListener('change', e => { loadFile(e.target.files[0]); e.target.value = ''; });
 document.addEventListener('paste', e => {
   for (const item of (e.clipboardData?.items || []))
@@ -765,7 +774,11 @@ function clearImage() {
     controlsHint.style.display = '';
     botBar.classList.remove('bot-bar-visible');
   }
-  setProgress(0);
+  progBar.classList.remove('indeterminate');
+  progBar.style.transition = 'none';
+  progBar.style.width = '0%';
+  void progBar.offsetWidth;
+  progBar.style.transition = '';
   hideError();
   if (isMobile) { updateViewLabel(); mobTapHint.classList.remove('visible'); }
 }
@@ -795,7 +808,15 @@ function hideError() {
 }
 
 function setProgress(pct) {
-  progBar.classList.remove('indeterminate');
+  if (progBar.classList.contains('indeterminate')) {
+    progBar.classList.remove('indeterminate');
+    progBar.style.transition = 'none';
+    progBar.style.opacity = '0';  // hide during snap so translateX reset is invisible
+    progBar.style.width = '0%';
+    void progBar.offsetWidth;     // anchor state before re-enabling transitions
+    progBar.style.transition = '';
+    progBar.style.opacity = '1';  // fade in while width grows
+  }
   progBar.style.width = pct + '%';
 }
 function setProgressIndeterminate() {
@@ -805,20 +826,28 @@ function tick() { return new Promise(r => setTimeout(r, 0)); }
 
 // ─── startup ──────────────────────────────────────────────────────────────────
 async function warmUp() {
-  const dummy = new ort.Tensor('float32', new Float32Array(4), [1, 1, 2, 2]);
+  const side = 512 + 2 * 64; // matches worst-case tile shape used in runDenoiser
+  const dummy = new ort.Tensor('float32', new Float32Array(side * side), [1, 1, side, side]);
   await ortSession.run({ [ortSession.inputNames[0]]: dummy });
 }
 
 async function main() {
+  dropIdle.classList.add('model-loading');
+  tDropLabel.textContent = t('drop-label-loading');
+  setProgressIndeterminate();
   try {
     await loadModel();
     await warmUp();
     ortReady = true;
+    _ortLoadResolve();
   } catch(e) {
     console.error(e);
     if (/HTTP|fetch|load|404/i.test(e.message)) notice.style.display = 'block';
-    setProgress(0);
+    _ortLoadReject(e);
   }
+  dropIdle.classList.remove('model-loading');
+  applyLang();
+  if (!S.inputImg) setProgress(0);
 }
 
 // ─── init lang ───────────────────────────────────────────────────────────────

@@ -148,6 +148,19 @@ body {
   font-size: 0.85rem; color: var(--text-light-2);
   text-align: center; line-height: 1.9; font-weight: 300;
 }
+.drop-idle.model-loading { pointer-events: none; }
+.drop-idle.model-loading .drop-circle svg { display: none; }
+.drop-idle.model-loading .drop-circle::after {
+  content: ''; display: block;
+  width: 1.5rem; height: 1.5rem;
+  border: 2px solid var(--accent-bg);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: drop-spin 0.75s linear infinite;
+}
+.drop-idle.model-loading #t-drop-sub { visibility: hidden; }
+@keyframes drop-spin { to { transform: rotate(360deg); } }
+
 .drop-sub kbd {
   display: inline-block; background: rgba(175, 155, 120, 0.16);
   border: 1px solid var(--cream-border); border-radius: 3px;
@@ -290,7 +303,7 @@ body {
 
 /* ── Progress */
 #prog-wrap { flex-shrink: 0; height: 3px; z-index: 10; overflow: hidden; background: color-mix(in srgb, rgb(120, 105, 75) 12%, var(--canvas-bg)); }
-#prog-bar  { height: 100%; background: var(--accent); width: 0; transition: width .2s ease-out; }
+#prog-bar  { height: 100%; background: var(--accent); width: 0; transition: width .2s ease-out, opacity .15s ease; }
 #prog-bar.indeterminate {
   width: 28% !important; transition: none;
   animation: prog-sweep .85s ease-in-out infinite;
