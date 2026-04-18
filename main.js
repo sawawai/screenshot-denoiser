@@ -49,6 +49,7 @@ const TX = {
     'drop-label-mobile':  'タップして画像を選択',
     'drop-sub-mobile':    'PNG &nbsp;·&nbsp; JPG &nbsp;·&nbsp; WebP &nbsp;·&nbsp; BMP',
     'drop-desc':          'スクリーンショットから動画圧縮ノイズを除去します<br>すべてブラウザ内で完結します',
+    'mob-tap-hint':       'タップして処理前後を比較',
   },
   en: {
     'title':           'Screenshot Denoiser',
@@ -71,6 +72,7 @@ const TX = {
     'drop-label-mobile':  'Tap to choose a photo',
     'drop-sub-mobile':    'PNG &nbsp;·&nbsp; JPG &nbsp;·&nbsp; WebP &nbsp;·&nbsp; BMP',
     'drop-desc':          'Removes video compression artifacts from screenshots.<br>Runs entirely in the browser.',
+    'mob-tap-hint':       'Tap image to compare before / after',
   },
 };
 
@@ -95,9 +97,10 @@ const tMap = {
   't-hint-key-hold':   'hint-key-hold',
   't-hint-key-scroll': 'hint-key-scroll',
   't-hint-key-dbl':    'hint-key-dbl',
-  't-mob-save':   'btn-save',
-  't-mob-new':    'btn-new',
-  't-drop-desc':  'drop-desc',
+  't-mob-save':     'btn-save',
+  't-mob-new':      'btn-new',
+  't-drop-desc':    'drop-desc',
+  'mob-tap-hint':   'mob-tap-hint',
 };
 
 function applyLang() {
@@ -471,6 +474,7 @@ const endPointer = e => {
       S.showingBefore = !S.showingBefore;
       S.showingBefore ? showOriginal() : showDenoised();
       updateViewLabel();
+      $('mob-tap-hint').classList.remove('visible');
     }
   }
 };
@@ -621,7 +625,7 @@ async function processAndShow(imgData, gen) {
   renderViewer();
   setSaveEnabled(true);
   setProgress(100);
-  if (isMobile) updateViewLabel();
+  if (isMobile) { updateViewLabel(); $('mob-tap-hint').classList.add('visible'); }
 }
 
 // ─── drop / paste / click ─────────────────────────────────────────────────────
@@ -647,11 +651,29 @@ function resetToNative() {
   requestAnimationFrame(() => applyViewerState());
 }
 
-function saveImage() {
+async function saveImage() {
   if (!S.denoisedImg) return;
   const c = document.createElement('canvas');
   c.width = S.denoisedImg.width; c.height = S.denoisedImg.height;
   c.getContext('2d').putImageData(S.denoisedImg, 0, 0);
+
+  // On mobile, use the Web Share API so the OS share sheet appears.
+  // iOS shows "Save Image" (→ Photos); Android shows gallery/save options.
+  // Must stay in the isMobile branch — desktop share sheets are unexpected there.
+  if (isMobile && navigator.canShare) {
+    try {
+      const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+      const file = new File([blob], S.saveName, { type: 'image/png' });
+      if (navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file] });
+        return;
+      }
+    } catch (e) {
+      if (e.name === 'AbortError') return; // user dismissed the sheet
+      console.warn('[save] Web Share failed:', e);
+    }
+  }
+
   const a = document.createElement('a');
   a.download = S.saveName; a.href = c.toDataURL('image/png'); a.click();
 }
@@ -674,7 +696,7 @@ function clearImage() {
   }
   setProgress(0);
   hideError();
-  if (isMobile) updateViewLabel();
+  if (isMobile) { updateViewLabel(); $('mob-tap-hint').classList.remove('visible'); }
 }
 
 // ─── header / mobile buttons ─────────────────────────────────────────────────
