@@ -593,6 +593,12 @@ document.addEventListener('keyup', e => {
   }
 });
 
+// Prevent browser-level viewport zoom on multi-touch (belt-and-suspenders for
+// Android browsers that ignore user-scalable=no in the viewport meta).
+document.addEventListener('touchmove', e => {
+  if (e.touches.length > 1) e.preventDefault();
+}, { passive: false });
+
 // ─── mobile pinch-zoom ───────────────────────────────────────────────────────
 if (isMobile) {
   let _pinch = null;
