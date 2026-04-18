@@ -198,47 +198,101 @@ async function loadModel() {
   throw new Error('No supported execution provider found (tried WebGPU, WebNN, WASM).');
 }
 
+// Returns the grid of tile start positions along one axis.
+function tileStarts(length, tileSize) {
+  const starts = [];
+  for (let s = 0; s < length; s += tileSize) starts.push(s);
+  return starts;
+}
+
+// Feather weight for one axis: ramps 0→1 over `ovl` pixels at interior seams,
+// stays 1 at image borders (no adjacent tile to blend with).
+function featherW(d, isEdge, ovl) {
+  return isEdge ? 1.0 : Math.min(d / ovl, 1.0);
+}
+
 async function runDenoiser(pixels, w, h) {
   if (!ortReady) throw new Error(t('model-not-ready'));
+
+  const TILE = 512; // canonical tile size (non-overlapping step)
+  const OVL  = 64;  // overlap added on each side for context
 
   const inputName  = ortSession.inputNames[0];
   const outputName = ortSession.outputNames[0];
 
-  // The model uses downscale_factor=2 internally, so both spatial dims must be
-  // even. Pad by 1 pixel (edge-extend) when needed; crop the output back after.
-  const pw = w + (w & 1);
-  const ph = h + (h & 1);
+  // Weighted accumulators for seamless blending across tile boundaries.
+  const accumY = new Float32Array(w * h);
+  const accumW = new Float32Array(w * h);
 
-  const luma = new Float32Array(pw * ph);
-  for (let y = 0; y < ph; y++) {
-    const sy = Math.min(y, h - 1);
-    for (let x = 0; x < pw; x++) {
-      const sx = Math.min(x, w - 1);
-      const p = (sy * w + sx) * 4;
-      luma[y * pw + x] =
-        (0.2126 * pixels[p] + 0.7152 * pixels[p + 1] + 0.0722 * pixels[p + 2]) / 255;
+  const xs = tileStarts(w, TILE);
+  const ys = tileStarts(h, TILE);
+  const total = xs.length * ys.length;
+  let done = 0;
+
+  for (const ty of ys) {
+    for (const tx of xs) {
+      // Expand each tile by OVL on every side (clamped to image bounds) so the
+      // model sees context beyond the canonical region; avoids border artifacts.
+      const x0 = Math.max(0, tx - OVL);
+      const y0 = Math.max(0, ty - OVL);
+      const x1 = Math.min(w, tx + TILE + OVL);
+      const y1 = Math.min(h, ty + TILE + OVL);
+      const tw = x1 - x0;
+      const th = y1 - y0;
+
+      // Model requires even spatial dimensions; pad by edge-extension if needed.
+      const pw = tw + (tw & 1);
+      const ph = th + (th & 1);
+
+      const luma = new Float32Array(pw * ph);
+      for (let y = 0; y < ph; y++) {
+        const iy = Math.min(y + y0, h - 1);
+        for (let x = 0; x < pw; x++) {
+          const p = (iy * w + Math.min(x + x0, w - 1)) * 4;
+          luma[y * pw + x] =
+            (0.2126 * pixels[p] + 0.7152 * pixels[p + 1] + 0.0722 * pixels[p + 2]) / 255;
+        }
+      }
+
+      const feeds = { [inputName]: new ort.Tensor('float32', luma, [1, 1, ph, pw]) };
+      const results = await ortSession.run(feeds);
+      const outData = results[outputName].data;
+
+      // Accumulate denoised luma with feather weights. Pixels near interior seams
+      // get lower weight so adjacent tiles blend smoothly; image-border pixels
+      // keep full weight since no neighbour tile exists on that side.
+      const atLeft  = x0 === 0;
+      const atRight = x1 === w;
+      const atTop   = y0 === 0;
+      const atBot   = y1 === h;
+
+      for (let y = 0; y < th; y++) {
+        const wy = featherW(y, atTop, OVL) * featherW(th - 1 - y, atBot, OVL);
+        const row = (y0 + y) * w;
+        for (let x = 0; x < tw; x++) {
+          const wi = wy * featherW(x, atLeft, OVL) * featherW(tw - 1 - x, atRight, OVL);
+          accumY[row + x0 + x] += wi * outData[y * pw + x];
+          accumW[row + x0 + x] += wi;
+        }
+      }
+
+      setProgress(Math.round(++done / total * 99));
     }
   }
 
-  const feeds = { [inputName]: new ort.Tensor('float32', luma, [1, 1, ph, pw]) };
-  const results = await ortSession.run(feeds);
-  const outData = results[outputName].data;
-
-  // Crop to original dimensions and reconstruct RGB from denoised luma + original chroma.
+  // Reconstruct RGB: replace luma with blended denoised value, keep original chroma.
   const outPixels = new Uint8ClampedArray(w * h * 4);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const yn = outData[y * pw + x];
-      const di = (y * w + x) * 4;
-      const r = pixels[di] / 255, g = pixels[di + 1] / 255, b = pixels[di + 2] / 255;
-      const yo = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-      const cb = (b - yo) / 1.8556;
-      const cr = (r - yo) / 1.5748;
-      outPixels[di]     = Math.round(Math.max(0, Math.min(1, yn + 1.5748 * cr)) * 255);
-      outPixels[di + 1] = Math.round(Math.max(0, Math.min(1, yn - 0.46812427 * cr - 0.18732427 * cb)) * 255);
-      outPixels[di + 2] = Math.round(Math.max(0, Math.min(1, yn + 1.8556 * cb)) * 255);
-      outPixels[di + 3] = 255;
-    }
+  for (let i = 0; i < w * h; i++) {
+    const yn = accumY[i] / accumW[i];
+    const di = i * 4;
+    const r = pixels[di] / 255, g = pixels[di + 1] / 255, b = pixels[di + 2] / 255;
+    const yo = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    const cb = (b - yo) / 1.8556;
+    const cr = (r - yo) / 1.5748;
+    outPixels[di]     = Math.round(Math.max(0, Math.min(1, yn + 1.5748 * cr)) * 255);
+    outPixels[di + 1] = Math.round(Math.max(0, Math.min(1, yn - 0.46812427 * cr - 0.18732427 * cb)) * 255);
+    outPixels[di + 2] = Math.round(Math.max(0, Math.min(1, yn + 1.8556 * cb)) * 255);
+    outPixels[di + 3] = 255;
   }
 
   return new ImageData(outPixels, w, h);
