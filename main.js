@@ -19,12 +19,41 @@ const S = {
 // ─── DOM ─────────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 const isMobile = window.matchMedia('(pointer: coarse)').matches;
-const canvasArea = $('canvas-area');
-const viewer     = $('viewer');
-const vdivider   = $('vdivider');
-const cvBefore   = $('cv-before');
-const cvAfter    = $('cv-after');
-const dropIdle   = $('drop-idle');
+const canvasArea   = $('canvas-area');
+const viewer       = $('viewer');
+const vdivider     = $('vdivider');
+const cvBefore     = $('cv-before');
+const cvAfter      = $('cv-after');
+const dropIdle     = $('drop-idle');
+const botBar       = $('bot-bar');
+const mobTapHint   = $('mob-tap-hint');
+const viewLabel    = $('view-label');
+const progBar      = $('prog-bar');
+const errorMsg     = $('error-msg');
+const btnSave      = $('btn-save');
+const btnNew       = $('btn-new');
+const mobSave      = $('mob-save');
+const mobNew       = $('mob-new');
+const controlsHint = $('controls-hint');
+const tDropDesc    = $('t-drop-desc');
+const tDropLabel   = $('t-drop-label');
+const tDropSub     = $('t-drop-sub');
+const fileInput    = $('file-input');
+const notice       = $('notice');
+
+let _viewerRect = null;
+function getViewerRect() {
+  if (!_viewerRect) _viewerRect = viewer.getBoundingClientRect();
+  return _viewerRect;
+}
+function invalidateViewerRect() { _viewerRect = null; }
+
+let _cvAfterRect = null;
+function getCvAfterRect() {
+  if (!_cvAfterRect) _cvAfterRect = cvAfter.getBoundingClientRect();
+  return _cvAfterRect;
+}
+function invalidateCvAfterRect() { _cvAfterRect = null; }
 
 // ─── i18n ────────────────────────────────────────────────────────────────────
 const TX = {
@@ -34,10 +63,10 @@ const TX = {
     'drop-sub':        'クリックしてファイルを選択 &nbsp;·&nbsp; <kbd>Ctrl+V</kbd> でペースト<br>PNG &nbsp;·&nbsp; JPG &nbsp;·&nbsp; WebP &nbsp;·&nbsp; BMP',
     'btn-save':        '保存',
     'btn-new':         '新規',
-    'div-before':      '処理前',
-    'div-after':       '処理後',
+    'label-before':    '処理前',
+    'label-after':     '処理後',
     'hint-reveal':     '処理前後を比較',
-    'hint-compare':    '元の画像を表示',
+    'hint-original':   '元画像を表示',
     'hint-zoom':       'ズームイン / アウト',
     'hint-reset':      '等倍にリセット',
     'hint-save':       '処理結果を保存',
@@ -57,10 +86,10 @@ const TX = {
     'drop-sub':        'Click to browse &nbsp;·&nbsp; <kbd>Ctrl+V</kbd> to paste<br>PNG &nbsp;·&nbsp; JPG &nbsp;·&nbsp; WebP &nbsp;·&nbsp; BMP',
     'btn-save':        'Save',
     'btn-new':         'New',
-    'div-before':      'Before',
-    'div-after':       'After',
+    'label-before':    'Before',
+    'label-after':     'After',
     'hint-reveal':     'Reveal before / after',
-    'hint-compare':    'Show original',
+    'hint-original':   'Show original',
     'hint-zoom':       'Zoom in / out',
     'hint-reset':      'Reset to 1:1',
     'hint-save':       'Save result',
@@ -69,10 +98,10 @@ const TX = {
     'hint-key-hold':   '<kbd>Space</kbd>',
     'hint-key-scroll': 'Scroll',
     'hint-key-dbl':       'Double-click',
-    'drop-label-mobile':  'Tap to choose a photo',
+    'drop-label-mobile':  'Tap to choose an image',
     'drop-sub-mobile':    'PNG &nbsp;·&nbsp; JPG &nbsp;·&nbsp; WebP &nbsp;·&nbsp; BMP',
     'drop-desc':          'Removes video compression artifacts from screenshots.<br>Runs entirely in the browser.',
-    'mob-tap-hint':       'Tap image to compare before / after',
+    'mob-tap-hint':       'Tap to compare',
   },
 };
 
@@ -85,10 +114,10 @@ const tMap = {
   't-drop-sub':   'drop-sub',
   't-btn-save':   'btn-save',
   't-btn-new':    'btn-new',
-  't-div-before':   'div-before',
-  't-div-after':    'div-after',
+  't-label-before':  'label-before',
+  't-label-after':   'label-after',
   't-hint-reveal':   'hint-reveal',
-  't-hint-compare':  'hint-compare',
+  't-hint-original': 'hint-original',
   't-hint-zoom':     'hint-zoom',
   't-hint-reset':    'hint-reset',
   't-hint-save':     'hint-save',
@@ -114,8 +143,8 @@ function applyLang() {
     b.classList.toggle('active', (i === 0 && lang === 'ja') || (i === 1 && lang === 'en'));
   });
   if (isMobile) {
-    $('t-drop-label').innerHTML = t('drop-label-mobile');
-    $('t-drop-sub').innerHTML   = t('drop-sub-mobile');
+    tDropLabel.innerHTML = t('drop-label-mobile');
+    tDropSub.innerHTML   = t('drop-sub-mobile');
     updateViewLabel();
   }
 }
@@ -248,11 +277,38 @@ async function runDenoiser(pixels, w, h) {
       const ph = th + (th & 1);
 
       const luma = new Float32Array(pw * ph);
-      for (let y = 0; y < ph; y++) {
-        const iy = Math.min(y + y0, h - 1);
-        for (let x = 0; x < pw; x++) {
-          const p = (iy * w + Math.min(x + x0, w - 1)) * 4;
-          luma[y * pw + x] =
+      // Main tw×th block — x0+x < x1 ≤ w and y0+y < y1 ≤ h, so no clamping needed.
+      for (let y = 0; y < th; y++) {
+        const srcBase = (y0 + y) * w + x0;
+        const lumaBase = y * pw;
+        for (let x = 0; x < tw; x++) {
+          const p = (srcBase + x) * 4;
+          luma[lumaBase + x] =
+            (0.2126 * pixels[p] + 0.7152 * pixels[p + 1] + 0.0722 * pixels[p + 2]) / 255;
+        }
+      }
+      // Padding column (tw odd): edge-extend at clamped x.
+      if (pw > tw) {
+        const padX = Math.min(x1, w - 1);
+        for (let y = 0; y < th; y++) {
+          const p = ((y0 + y) * w + padX) * 4;
+          luma[y * pw + tw] =
+            (0.2126 * pixels[p] + 0.7152 * pixels[p + 1] + 0.0722 * pixels[p + 2]) / 255;
+        }
+      }
+      // Padding row (th odd): edge-extend at clamped y.
+      if (ph > th) {
+        const padY = Math.min(y1, h - 1);
+        const srcBase = padY * w;
+        for (let x = 0; x < tw; x++) {
+          const p = (srcBase + x0 + x) * 4;
+          luma[th * pw + x] =
+            (0.2126 * pixels[p] + 0.7152 * pixels[p + 1] + 0.0722 * pixels[p + 2]) / 255;
+        }
+        if (pw > tw) {
+          const padX = Math.min(x1, w - 1);
+          const p = (srcBase + padX) * 4;
+          luma[th * pw + tw] =
             (0.2126 * pixels[p] + 0.7152 * pixels[p + 1] + 0.0722 * pixels[p + 2]) / 255;
         }
       }
@@ -269,11 +325,18 @@ async function runDenoiser(pixels, w, h) {
       const atTop   = y0 === 0;
       const atBot   = y1 === h;
 
+      const wx = new Float32Array(tw);
+      for (let x = 0; x < tw; x++)
+        wx[x] = featherW(x, atLeft, OVL) * featherW(tw - 1 - x, atRight, OVL);
+      const wyArr = new Float32Array(th);
+      for (let y = 0; y < th; y++)
+        wyArr[y] = featherW(y, atTop, OVL) * featherW(th - 1 - y, atBot, OVL);
+
       for (let y = 0; y < th; y++) {
-        const wy = featherW(y, atTop, OVL) * featherW(th - 1 - y, atBot, OVL);
+        const wy = wyArr[y];
         const row = (y0 + y) * w;
         for (let x = 0; x < tw; x++) {
-          const wi = wy * featherW(x, atLeft, OVL) * featherW(tw - 1 - x, atRight, OVL);
+          const wi = wy * wx[x];
           accumY[row + x0 + x] += wi * outData[y * pw + x];
           accumW[row + x0 + x] += wi;
         }
@@ -286,15 +349,15 @@ async function runDenoiser(pixels, w, h) {
   // Reconstruct RGB: replace luma with blended denoised value, keep original chroma.
   const outPixels = new Uint8ClampedArray(w * h * 4);
   for (let i = 0; i < w * h; i++) {
-    const yn = accumY[i] / accumW[i];
+    const yn255 = (accumY[i] / accumW[i]) * 255;
     const di = i * 4;
-    const r = pixels[di] / 255, g = pixels[di + 1] / 255, b = pixels[di + 2] / 255;
-    const yo = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    const cb = (b - yo) / 1.8556;
-    const cr = (r - yo) / 1.5748;
-    outPixels[di]     = Math.round(Math.max(0, Math.min(1, yn + 1.5748 * cr)) * 255);
-    outPixels[di + 1] = Math.round(Math.max(0, Math.min(1, yn - 0.46812427 * cr - 0.18732427 * cb)) * 255);
-    outPixels[di + 2] = Math.round(Math.max(0, Math.min(1, yn + 1.8556 * cb)) * 255);
+    const R = pixels[di], G = pixels[di + 1], B = pixels[di + 2];
+    const yo = 0.2126 * R + 0.7152 * G + 0.0722 * B;
+    const cb = (B - yo) / 1.8556;
+    const cr = (R - yo) / 1.5748;
+    outPixels[di]     = Math.round(Math.max(0, Math.min(255, yn255 + 1.5748 * cr)));
+    outPixels[di + 1] = Math.round(Math.max(0, Math.min(255, yn255 - 0.46812427 * cr - 0.18732427 * cb)));
+    outPixels[di + 2] = Math.round(Math.max(0, Math.min(255, yn255 + 1.8556 * cb)));
     outPixels[di + 3] = 255;
   }
 
@@ -305,7 +368,7 @@ async function runDenoiser(pixels, w, h) {
 const FIT_MARGIN = 32; // px per side
 
 function computeMinZoom() {
-  const vr = viewer.getBoundingClientRect();
+  const vr = getViewerRect();
   const fitScale = Math.min(
     (vr.width  - FIT_MARGIN * 2) / S.inputImg.width,
     (vr.height - FIT_MARGIN * 2) / S.inputImg.height
@@ -318,6 +381,8 @@ function updateZoomClass() {
 }
 
 function applyZoomTransform() {
+  invalidateViewerRect();
+  invalidateCvAfterRect();
   const w = Math.round(S.inputImg.width  * S.zoom);
   const h = Math.round(S.inputImg.height * S.zoom);
   const tx = `translate(calc(-50% + ${S.zoomPanX}px), calc(-50% + ${S.zoomPanY}px))`;
@@ -325,7 +390,7 @@ function applyZoomTransform() {
 }
 
 function clampZoomPan() {
-  const vr = viewer.getBoundingClientRect();
+  const vr = getViewerRect();
   const scaledW = S.inputImg.width  * S.zoom;
   const scaledH = S.inputImg.height * S.zoom;
   const margin = 40;
@@ -337,8 +402,8 @@ function clampZoomPan() {
 
 // ─── reveal / compare ────────────────────────────────────────────────────────
 function applyRevealState(cursorX, showLine) {
-  const vr = viewer.getBoundingClientRect();
-  const cr = cvAfter.getBoundingClientRect();
+  const vr = getViewerRect();
+  const cr = getCvAfterRect();
   const clipLeft = Math.max(0, cursorX - (cr.left - vr.left));
   cvAfter.style.clipPath = cr.width > 0
     ? `inset(0 0 0 ${clipLeft / cr.width * 100}%)`
@@ -355,12 +420,12 @@ function showOriginal()      { applyRevealState(viewer.clientWidth, false); }
 function applyViewerState() {
   if (!S.inputImg) return;
   if (isMobile) {
-    S.showingBefore ? showOriginal() : showDenoised();
+    S.showingBefore || !S.denoisedImg ? showOriginal() : showDenoised();
     return;
   }
   if (S.denoisedImg && S.cursorInViewer && !S.comparing && S.lastCursorX !== null) {
     setReveal(S.lastCursorX);
-  } else if (S.comparing) {
+  } else if (S.comparing || !S.denoisedImg) {
     showOriginal();
   } else {
     showDenoised();
@@ -368,6 +433,7 @@ function applyViewerState() {
 }
 
 function renderViewer() {
+  invalidateCvAfterRect();
   cvBefore.width  = S.inputImg.width;  cvBefore.height = S.inputImg.height;
   cvBefore.getContext('2d').putImageData(S.inputImg, 0, 0);
   if (S.denoisedImg) {
@@ -375,7 +441,8 @@ function renderViewer() {
     cvAfter.getContext('2d').putImageData(S.denoisedImg, 0, 0);
   } else {
     cvAfter.width  = S.inputImg.width;  cvAfter.height = S.inputImg.height;
-    cvAfter.getContext('2d').putImageData(S.inputImg, 0, 0);
+    // cvBefore already has inputImg; applyViewerState will call showOriginal()
+    // to fully clip cvAfter, so no paint needed here.
   }
   applyZoomTransform();
   updateZoomClass();
@@ -387,7 +454,7 @@ viewer.addEventListener('wheel', e => {
   if (!S.inputImg) return;
   e.preventDefault();
   if (S.zoom <= S.minZoom && e.deltaY > 0) return;
-  const vr = viewer.getBoundingClientRect();
+  const vr = getViewerRect();
   const cx = e.clientX - vr.left - vr.width  / 2;
   const cy = e.clientY - vr.top  - vr.height / 2;
   const oldZoom = S.zoom;
@@ -413,7 +480,7 @@ viewer.addEventListener('mouseenter', () => {
 
 viewer.addEventListener('mousemove', e => {
   if (isMobile || !S.inputImg) return;
-  const vr = viewer.getBoundingClientRect();
+  const vr = getViewerRect();
   S.lastCursorX = e.clientX - vr.left;
   if (!S.comparing && !S.panning && S.denoisedImg) setReveal(S.lastCursorX);
 });
@@ -437,7 +504,7 @@ viewer.addEventListener('pointerdown', e => {
 
 viewer.addEventListener('pointermove', e => {
   if (!S.inputImg) return;
-  const vr = viewer.getBoundingClientRect();
+  const vr = getViewerRect();
   S.lastCursorX = e.clientX - vr.left;
   if (S.pointerDown && !S.panning && viewer.classList.contains('zoom-mode')) {
     const dx = e.clientX - S.panStartX, dy = e.clientY - S.panStartY;
@@ -474,7 +541,7 @@ const endPointer = e => {
       S.showingBefore = !S.showingBefore;
       S.showingBefore ? showOriginal() : showDenoised();
       updateViewLabel();
-      $('mob-tap-hint').classList.remove('visible');
+      mobTapHint.classList.remove('visible');
     }
   }
 };
@@ -519,7 +586,7 @@ if (isMobile) {
     S.pointerDown = false; S.panning = false;
     viewer.classList.remove('panning-active');
     const [a, b] = [e.touches[0], e.touches[1]];
-    const vr = viewer.getBoundingClientRect();
+    const vr = getViewerRect();
     _pinch = {
       dist0: Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY),
       zoom0: S.zoom,
@@ -533,7 +600,7 @@ if (isMobile) {
     if (!_pinch || e.touches.length !== 2) return;
     e.preventDefault();
     const [a, b] = [e.touches[0], e.touches[1]];
-    const vr    = viewer.getBoundingClientRect();
+    const vr    = getViewerRect();
     const dist  = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
     const cx    = (a.clientX + b.clientX) / 2 - vr.left - vr.width  / 2;
     const cy    = (a.clientY + b.clientY) / 2 - vr.top  - vr.height / 2;
@@ -555,6 +622,7 @@ if (isMobile) {
 
 // ─── window resize ────────────────────────────────────────────────────────────
 window.addEventListener('resize', () => {
+  invalidateViewerRect();
   if (!S.inputImg) return;
   computeMinZoom();
   S.zoom = Math.max(S.zoom, S.minZoom);
@@ -594,10 +662,11 @@ async function loadFile(file) {
     // Preserve cursorInViewer / lastCursorX — cursor may still be inside the
     // viewer when replacing an image, and no mouseenter will fire to restore them.
     dropIdle.style.display              = 'none';
-    $('t-drop-desc').style.display      = 'none';
-    $('controls-hint').style.display    = 'none';
-    viewer.style.display                = 'block';
-    $('bot-bar').classList.remove('bot-bar-visible');
+    tDropDesc.style.display      = 'none';
+    controlsHint.style.display   = 'none';
+    viewer.style.display         = 'block';
+    invalidateViewerRect();
+    botBar.classList.remove('bot-bar-visible');
     computeMinZoom();
     viewer.classList.remove('panning-active');
     if (!S.cursorInViewer) viewer.classList.remove('reveal-active');
@@ -619,21 +688,21 @@ async function processAndShow(imgData, gen) {
   S.denoisedImg = result;
   S.showingBefore = false;
   if (!isMobile) {
-    requestAnimationFrame(() => $('bot-bar').classList.add('bot-bar-visible'));
+    requestAnimationFrame(() => botBar.classList.add('bot-bar-visible'));
     if (S.cursorInViewer && !S.comparing) viewer.classList.add('reveal-active');
   }
   renderViewer();
   setSaveEnabled(true);
   setProgress(100);
-  if (isMobile) { updateViewLabel(); $('mob-tap-hint').classList.add('visible'); }
+  if (isMobile) { updateViewLabel(); mobTapHint.classList.add('visible'); }
 }
 
 // ─── drop / paste / click ─────────────────────────────────────────────────────
-dropIdle.addEventListener('click', () => $('file-input').click());
+dropIdle.addEventListener('click', () => fileInput.click());
 dropIdle.addEventListener('dragover',  e => { e.preventDefault(); dropIdle.classList.add('drag-over'); });
 dropIdle.addEventListener('dragleave', ()  => dropIdle.classList.remove('drag-over'));
 dropIdle.addEventListener('drop', e => { e.preventDefault(); dropIdle.classList.remove('drag-over'); loadFile(e.dataTransfer.files[0]); });
-$('file-input').addEventListener('change', e => { loadFile(e.target.files[0]); e.target.value = ''; });
+fileInput.addEventListener('change', e => { loadFile(e.target.files[0]); e.target.value = ''; });
 document.addEventListener('paste', e => {
   for (const item of (e.clipboardData?.items || []))
     if (item.type.startsWith('image/')) { loadFile(item.getAsFile()); break; }
@@ -685,53 +754,52 @@ function clearImage() {
   S.comparing = false; S.pointerDown = false; S.lastCursorX = null; S.cursorInViewer = false;
   resetZoom();
   viewer.style.display   = 'none';
-  dropIdle.style.display      = '';
-  $('t-drop-desc').style.display = '';
+  invalidateViewerRect();
+  invalidateCvAfterRect();
+  dropIdle.style.display = '';
+  tDropDesc.style.display = '';
   canvasArea.classList.remove('viewer-active');
   viewer.classList.remove('reveal-active', 'panning-active');
   setSaveEnabled(false); setNewEnabled(false);
   if (!isMobile) {
-    $('controls-hint').style.display = '';
-    $('bot-bar').classList.remove('bot-bar-visible');
+    controlsHint.style.display = '';
+    botBar.classList.remove('bot-bar-visible');
   }
   setProgress(0);
   hideError();
-  if (isMobile) { updateViewLabel(); $('mob-tap-hint').classList.remove('visible'); }
+  if (isMobile) { updateViewLabel(); mobTapHint.classList.remove('visible'); }
 }
 
 // ─── header / mobile buttons ─────────────────────────────────────────────────
-$('btn-save').addEventListener('click', saveImage);
-$('btn-new').addEventListener('click',  clearImage);
-$('mob-save').addEventListener('click', saveImage);
-$('mob-new').addEventListener('click',  clearImage);
+btnSave.addEventListener('click', saveImage);
+btnNew.addEventListener('click',  clearImage);
+mobSave.addEventListener('click', saveImage);
+mobNew.addEventListener('click',  clearImage);
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
-function setSaveEnabled(v) { $('btn-save').disabled = !v; $('mob-save').disabled = !v; }
-function setNewEnabled(v)  { $('btn-new').disabled  = !v; $('mob-new').disabled  = !v; }
+function setSaveEnabled(v) { btnSave.disabled = !v; mobSave.disabled = !v; }
+function setNewEnabled(v)  { btnNew.disabled  = !v; mobNew.disabled  = !v; }
 
 function updateViewLabel() {
   const show = S.showingBefore && !!S.denoisedImg;
-  const el = $('view-label');
-  if (show) el.textContent = t('div-before');
-  el.classList.toggle('visible', show);
+  if (show) viewLabel.textContent = t('label-before');
+  viewLabel.classList.toggle('visible', show);
 }
 
 function showError(msg) {
-  const el = $('error-msg');
-  el.textContent = msg;
-  el.classList.add('visible');
+  errorMsg.textContent = msg;
+  errorMsg.classList.add('visible');
 }
 function hideError() {
-  $('error-msg').classList.remove('visible');
+  errorMsg.classList.remove('visible');
 }
 
 function setProgress(pct) {
-  const bar = $('prog-bar');
-  bar.classList.remove('indeterminate');
-  bar.style.width = pct + '%';
+  progBar.classList.remove('indeterminate');
+  progBar.style.width = pct + '%';
 }
 function setProgressIndeterminate() {
-  $('prog-bar').classList.add('indeterminate');
+  progBar.classList.add('indeterminate');
 }
 function tick() { return new Promise(r => setTimeout(r, 0)); }
 
@@ -748,7 +816,7 @@ async function main() {
     ortReady = true;
   } catch(e) {
     console.error(e);
-    if (/HTTP|fetch|load|404/i.test(e.message)) $('notice').style.display = 'block';
+    if (/HTTP|fetch|load|404/i.test(e.message)) notice.style.display = 'block';
     setProgress(0);
   }
 }
