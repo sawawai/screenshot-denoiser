@@ -178,11 +178,19 @@ let _ortLoadResolve, _ortLoadReject;
 const _ortLoadPromise = new Promise((res, rej) => { _ortLoadResolve = res; _ortLoadReject = rej; });
 
 async function loadModel() {
+  const ua = navigator.userAgent;
+  // Safari includes "Safari" but not "Chrome"; covers both macOS and iOS.
+  const isSafari  = ua.includes('Safari') && !ua.includes('Chrome');
+
   // WASM binary fetches must share the CDN origin used by the JS bundle.
   ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
   // ORT silently drops to 1 thread when SharedArrayBuffer is unavailable
   // (server missing COOP/COEP headers), so this is a best-effort hint.
-  ort.env.wasm.numThreads = navigator.hardwareConcurrency || 4;
+  // Cap threads on iOS: the larger model's WASM heap per thread is enough to
+  // push Safari over its memory limit on iPhones with less headroom.
+  ort.env.wasm.numThreads = (isMobile && isSafari)
+    ? Math.min(navigator.hardwareConcurrency || 2, 2)
+    : (navigator.hardwareConcurrency || 4);
   ort.env.wasm.proxy = true;
 
   const modelPath = './models/s2d_1x.onnx';
@@ -192,10 +200,6 @@ async function loadModel() {
     enableCpuMemArena: true,
     enableMemPattern: true,
   };
-
-  const ua = navigator.userAgent;
-  // Safari includes "Safari" but not "Chrome"; covers both macOS and iOS.
-  const isSafari  = ua.includes('Safari') && !ua.includes('Chrome');
   // Android Chrome: NNAPI (WebNN) is unreliable across devices and GPU overhead
   // for a model this small doesn't pay off on shared mobile memory bandwidth.
   const useGPU    = !isMobile;
@@ -263,8 +267,10 @@ function featherW(d, isEdge, ovl) {
 async function runDenoiser(pixels, w, h) {
   if (!ortReady) throw new Error(t('model-not-ready'));
 
-  const TILE = 512; // canonical tile size (non-overlapping step)
-  const OVL  = 64;  // overlap added on each side for context
+  // Smaller tiles on mobile keep peak WASM activation memory per ortSession.run()
+  // call within iOS Safari's tighter heap budget (~4× reduction vs desktop tiles).
+  const TILE = isMobile ? 256 : 512;
+  const OVL  = isMobile ? 32  : 64;
 
   const inputName  = ortSession.inputNames[0];
   const outputName = ortSession.outputNames[0];
@@ -675,7 +681,7 @@ async function loadFile(file) {
   S.saveName = deriveSaveName(file.name);
   if (ortReady) setProgress(2); else setProgressIndeterminate();
   try {
-    const bmp = await createImageBitmap(file);
+    const bmp = await createImageBitmap(file, { colorSpaceConversion: 'none' });
     const tmp = document.createElement('canvas');
     tmp.width = bmp.width; tmp.height = bmp.height;
     const ctx = tmp.getContext('2d');
@@ -844,7 +850,9 @@ function tick() { return new Promise(r => setTimeout(r, 0)); }
 
 // ─── startup ──────────────────────────────────────────────────────────────────
 async function warmUp() {
-  const side = 512 + 2 * 64; // matches worst-case tile shape used in runDenoiser
+  const tileSize = isMobile ? 256 : 512;
+  const ovl      = isMobile ? 32  : 64;
+  const side = tileSize + 2 * ovl; // matches worst-case tile shape used in runDenoiser
   const dummy = new ort.Tensor('float32', new Float32Array(side * side), [1, 1, side, side]);
   await ortSession.run({ [ortSession.inputNames[0]]: dummy });
 }
