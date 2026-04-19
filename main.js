@@ -755,16 +755,29 @@ function resetToNative() {
 
 async function saveImage() {
   if (!S.denoisedImg) return;
-  const c = document.createElement('canvas');
-  c.width = S.denoisedImg.width; c.height = S.denoisedImg.height;
-  c.getContext('2d').putImageData(S.denoisedImg, 0, 0);
+
+  // Use OffscreenCanvas when available: it is not tied to the display rendering
+  // pipeline, so browsers (notably Firefox on Windows) won't apply the monitor's
+  // ICC color profile when encoding, which would otherwise shift colors in the
+  // saved PNG compared to what was uploaded.
+  async function encodeBlob() {
+    if (typeof OffscreenCanvas !== 'undefined') {
+      const oc = new OffscreenCanvas(S.denoisedImg.width, S.denoisedImg.height);
+      oc.getContext('2d', { colorSpace: 'srgb' }).putImageData(S.denoisedImg, 0, 0);
+      return oc.convertToBlob({ type: 'image/png' });
+    }
+    const c = document.createElement('canvas');
+    c.width = S.denoisedImg.width; c.height = S.denoisedImg.height;
+    c.getContext('2d').putImageData(S.denoisedImg, 0, 0);
+    return new Promise(r => c.toBlob(r, 'image/png'));
+  }
 
   // On mobile, use the Web Share API so the OS share sheet appears.
   // iOS shows "Save Image" (→ Photos); Android shows gallery/save options.
   // Must stay in the isMobile branch — desktop share sheets are unexpected there.
   if (isMobile && navigator.canShare) {
     try {
-      const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+      const blob = await encodeBlob();
       const file = new File([blob], S.saveName, { type: 'image/png' });
       if (navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file] });
@@ -776,8 +789,11 @@ async function saveImage() {
     }
   }
 
+  const blob = await encodeBlob();
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.download = S.saveName; a.href = c.toDataURL('image/png'); a.click();
+  a.download = S.saveName; a.href = url; a.click();
+  URL.revokeObjectURL(url);
 }
 
 function clearImage() {
