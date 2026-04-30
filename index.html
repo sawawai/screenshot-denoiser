@@ -20,20 +20,27 @@
 </head>
 <body>
 
+<svg style="display:none" aria-hidden="true">
+  <defs>
+    <symbol id="icon-save" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3v12M7.5 10.5l4.5 4.5 4.5-4.5M5 19h14"/>
+    </symbol>
+    <symbol id="icon-new" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 12a9 9 0 1 0 2.1-5.8M3 4v5h5"/>
+    </symbol>
+  </defs>
+</svg>
+
 <header id="hdr">
-  <h1 id="t-title">Fast Image Denoiser</h1>
+  <h1 id="t-title">スクショ補正</h1>
 
   <div id="hdr-right">
     <button class="btn" id="btn-save" disabled>
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 3v12M7.5 10.5l4.5 4.5 4.5-4.5M5 19h14"/>
-      </svg>
+      <svg width="14" height="14" aria-hidden="true"><use href="#icon-save"/></svg>
       <span id="t-btn-save"></span>
     </button>
-    <button class="btn" id="btn-new"  disabled>
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M3 12a9 9 0 1 0 2.1-5.8M3 4v5h5"/>
-      </svg>
+    <button class="btn" id="btn-new" disabled>
+      <svg width="14" height="14" aria-hidden="true"><use href="#icon-new"/></svg>
       <span id="t-btn-new"></span>
     </button>
   </div>
@@ -98,15 +105,11 @@
 
 <div id="mobile-bar">
   <button class="btn" id="mob-save" disabled>
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M12 3v12M7.5 10.5l4.5 4.5 4.5-4.5M5 19h14"/>
-    </svg>
+    <svg width="16" height="16" aria-hidden="true"><use href="#icon-save"/></svg>
     <span id="t-mob-save"></span>
   </button>
   <button class="btn" id="mob-new" disabled>
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M3 12a9 9 0 1 0 2.1-5.8M3 4v5h5"/>
-    </svg>
+    <svg width="16" height="16" aria-hidden="true"><use href="#icon-new"/></svg>
     <span id="t-mob-new"></span>
   </button>
 </div>
