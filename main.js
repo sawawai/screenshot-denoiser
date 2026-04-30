@@ -184,59 +184,7 @@ let _loadGen = 0;
 // BT.709 luma + reciprocals so hot loops can multiply instead of divide.
 const Y_R = 0.2126, Y_G = 0.7152, Y_B = 0.0722;
 const Y_R_INV255 = Y_R / 255, Y_G_INV255 = Y_G / 255, Y_B_INV255 = Y_B / 255;
-const INV_KB = 1 / 1.8556;   // Cb scale: (B - Y) * INV_KB
-const INV_KR = 1 / 1.5748;   // Cr scale: (R - Y) * INV_KR
 const INV_255 = 1 / 255;
-
-// ─── chroma denoising ────────────────────────────────────────────────────────
-// Separable cross-bilateral filter applied in-place to a single-channel Float32
-// chroma plane. The guide image (denoised luma) gates smoothing across luma
-// edges, preventing colour bleed while still removing chroma block artifacts in
-// smooth regions. A 256-entry LUT replaces per-tap exp() calls.
-const _CK = [0.0625, 0.25, 0.375, 0.25, 0.0625];
-
-const _RANGE_LUT = (() => {
-  const lut = new Float32Array(256);
-  const inv2r2 = 1 / (2 * 0.1 * 0.1); // σ_range = 0.1 in normalised [0,1] luma
-  for (let i = 0; i < 256; i++) { const d = i / 255; lut[i] = Math.exp(-d * d * inv2r2); }
-  return lut;
-})();
-
-function denoiseChroma(ch, w, h, guide, tmp) {
-  if (!tmp) tmp = new Float32Array(w * h);
-
-  for (let y = 0; y < h; y++) {
-    const row = y * w;
-    for (let x = 0; x < w; x++) {
-      const gc = guide[row + x];
-      let sum = 0, wsum = 0;
-      for (let d = -2; d <= 2; d++) {
-        const xx = Math.max(0, Math.min(w - 1, x + d));
-        const wr = _RANGE_LUT[Math.min(255, Math.abs(gc - guide[row + xx]) * 255 + 0.5) | 0];
-        const wt = _CK[d + 2] * wr;
-        sum += wt * ch[row + xx];
-        wsum += wt;
-      }
-      tmp[row + x] = sum / wsum;
-    }
-  }
-
-  for (let y = 0; y < h; y++) {
-    const row = y * w;
-    for (let x = 0; x < w; x++) {
-      const gc = guide[row + x];
-      let sum = 0, wsum = 0;
-      for (let d = -2; d <= 2; d++) {
-        const yy = Math.max(0, Math.min(h - 1, y + d));
-        const wr = _RANGE_LUT[Math.min(255, Math.abs(gc - guide[yy * w + x]) * 255 + 0.5) | 0];
-        const wt = _CK[d + 2] * wr;
-        sum += wt * tmp[yy * w + x];
-        wsum += wt;
-      }
-      ch[row + x] = sum / wsum;
-    }
-  }
-}
 
 // ─── blue-noise dither ────────────────────────────────────────────────────────
 // 64×64 single-channel blue-noise texture from Christoph Peters /
@@ -547,124 +495,31 @@ async function runDenoiser(pixels, w, h) {
     }
   }
 
-  // Normalise accumulated luma; use it as the bilateral guide for chroma denoising.
+  // Normalise accumulated luma and composite with original chroma.
+  // Adding the luma delta uniformly to each RGB channel is mathematically
+  // equivalent to a full BT.709 YCbCr round-trip with original Cb/Cr.
   const denoisedY = new Float32Array(w * h);
   for (let i = 0; i < w * h; i++) denoisedY[i] = accumY[i] / accumW[i];
 
-  // 4:2:0 video chroma block artifacts span 8–16 px, beyond what the 5-tap
-  // separable bilateral can reach in one full-res pass. Multi-scale instead:
-  // box-downsample Y guide and Cb/Cr by 2×, filter at half-res (σ_eff doubles
-  // in full-res space at ¼ the cost), then joint-bilateral upsample using the
-  // full-res Y as guide so chroma snaps back to luma edges blurred by the
-  // downsample. Odd-length edges round up; the last half-res sample averages
-  // the trailing column/row with itself.
-  const hw = (w + 1) >> 1;
-  const hh = (h + 1) >> 1;
-
-  const halfY  = new Float32Array(hw * hh);
-  const halfCb = new Float32Array(hw * hh);
-  const halfCr = new Float32Array(hw * hh);
-
-  for (let y = 0; y < hh; y++) {
-    const y0 = y * 2;
-    const y1 = Math.min(y0 + 1, h - 1);
-    const r0 = y0 * w, r1 = y1 * w;
-    const dr = y * hw;
-    for (let x = 0; x < hw; x++) {
-      const x0 = x * 2;
-      const x1 = Math.min(x0 + 1, w - 1);
-
-      halfY[dr + x] = (denoisedY[r0 + x0] + denoisedY[r0 + x1] +
-                      denoisedY[r1 + x0] + denoisedY[r1 + x1]) * 0.25;
-
-      const pA = (r0 + x0) * 4, pB = (r0 + x1) * 4;
-      const pC = (r1 + x0) * 4, pD = (r1 + x1) * 4;
-      const rAvg = (pixels[pA]     + pixels[pB]     + pixels[pC]     + pixels[pD])     * 0.25;
-      const gAvg = (pixels[pA + 1] + pixels[pB + 1] + pixels[pC + 1] + pixels[pD + 1]) * 0.25;
-      const bAvg = (pixels[pA + 2] + pixels[pB + 2] + pixels[pC + 2] + pixels[pD + 2]) * 0.25;
-      const yoAvg = Y_R * rAvg + Y_G * gAvg + Y_B * bAvg;
-      halfCb[dr + x] = (bAvg - yoAvg) * INV_KB;
-      halfCr[dr + x] = (rAvg - yoAvg) * INV_KR;
-    }
-  }
-
-  const chromaTmp = new Float32Array(hw * hh);
-  denoiseChroma(halfCb, hw, hh, halfY, chromaTmp);
-  denoiseChroma(halfCr, hw, hh, halfY, chromaTmp);
-
-  // Joint-bilateral upsample fused into YCbCr→RGB output. Each output pixel
-  // takes the bilinear blend of its 4 nearest half-res chroma samples, with
-  // weights additionally modulated by similarity between the full-res Y and
-  // the half-res Y at each sample — same range LUT (σ=0.1) as the half-res
-  // pass. Half-res samples are at full-res positions (2hx + 0.5, 2hy + 0.5),
-  // hence the fx = px·0.5 − 0.25 alignment.
-  //
-  // Dither is applied per RGB channel: blue-noise indices for G and B are
-  // offset by amounts coprime with 64 so the patterns decorrelate across
-  // channels — without this, colour gradients still band visibly because the
-  // single Y-axis dither propagates equally to R/G/B in the YCbCr→RGB matrix.
   const outPixels = new Uint8ClampedArray(w * h * 4);
-
-  const hxA = new Int32Array(w);
-  const hxB = new Int32Array(w);
-  const sxArr = new Float32Array(w);
-  for (let px = 0; px < w; px++) {
-    const fx = px * 0.5 - 0.25;
-    let h0 = Math.floor(fx);
-    sxArr[px] = fx - h0;
-    let h1 = h0 + 1;
-    if (h0 < 0) h0 = 0; else if (h0 > hw - 1) h0 = hw - 1;
-    if (h1 < 0) h1 = 0; else if (h1 > hw - 1) h1 = hw - 1;
-    hxA[px] = h0; hxB[px] = h1;
-  }
-
   for (let py = 0; py < h; py++) {
-    const fy = py * 0.5 - 0.25;
-    let hy0 = Math.floor(fy);
-    const sy = fy - hy0;
-    let hy1 = hy0 + 1;
-    if (hy0 < 0) hy0 = 0; else if (hy0 > hh - 1) hy0 = hh - 1;
-    if (hy1 < 0) hy1 = 0; else if (hy1 > hh - 1) hy1 = hh - 1;
-    const hRow0 = hy0 * hw;
-    const hRow1 = hy1 * hw;
-    const omSy = 1 - sy;
-
     const ditherR = (py & 63) * 64;
     const ditherG = ((py + 19) & 63) * 64;
     const ditherB = ((py + 41) & 63) * 64;
-
     const rowBase = py * w;
-
     for (let px = 0; px < w; px++) {
       const i = rowBase + px;
-      const sx = sxArr[px], omSx = 1 - sx;
-      const a = hxA[px], b = hxB[px];
-
-      const idxA = hRow0 + a, idxB = hRow0 + b;
-      const idxC = hRow1 + a, idxD = hRow1 + b;
-
-      const bwA = omSx * omSy, bwB = sx * omSy;
-      const bwC = omSx * sy,   bwD = sx * sy;
-
-      const gFull = denoisedY[i];
-      const wA = bwA * _RANGE_LUT[Math.min(255, Math.abs(gFull - halfY[idxA]) * 255 + 0.5) | 0];
-      const wB = bwB * _RANGE_LUT[Math.min(255, Math.abs(gFull - halfY[idxB]) * 255 + 0.5) | 0];
-      const wC = bwC * _RANGE_LUT[Math.min(255, Math.abs(gFull - halfY[idxC]) * 255 + 0.5) | 0];
-      const wD = bwD * _RANGE_LUT[Math.min(255, Math.abs(gFull - halfY[idxD]) * 255 + 0.5) | 0];
-      const inv = 1 / (wA + wB + wC + wD);
-      const cb = (wA * halfCb[idxA] + wB * halfCb[idxB] + wC * halfCb[idxC] + wD * halfCb[idxD]) * inv;
-      const cr = (wA * halfCr[idxA] + wB * halfCr[idxB] + wC * halfCr[idxC] + wD * halfCr[idxD]) * inv;
-
-      const yn255 = gFull * 255;
-      const di = i * 4;
-
+      const pi = i * 4;
+      const r = pixels[pi], g = pixels[pi + 1], b = pixels[pi + 2];
+      const origY = Y_R_INV255 * r + Y_G_INV255 * g + Y_B_INV255 * b;
+      const deltaY255 = (denoisedY[i] - origY) * 255;
       const dR = (blueNoise[ditherR +  (px        & 63)] - 127.5) * INV_255;
       const dG = (blueNoise[ditherG + ((px + 17)  & 63)] - 127.5) * INV_255;
       const dB = (blueNoise[ditherB + ((px + 37)  & 63)] - 127.5) * INV_255;
-      outPixels[di]     = yn255 + 1.5748 * cr + dR;
-      outPixels[di + 1] = yn255 - 0.46812427 * cr - 0.18732427 * cb + dG;
-      outPixels[di + 2] = yn255 + 1.8556 * cb + dB;
-      outPixels[di + 3] = 255;
+      outPixels[pi]     = r + deltaY255 + dR;
+      outPixels[pi + 1] = g + deltaY255 + dG;
+      outPixels[pi + 2] = b + deltaY255 + dB;
+      outPixels[pi + 3] = 255;
     }
   }
 
