@@ -320,6 +320,11 @@ const blueNoise = new Uint8Array([
    49, 86, 26, 75,170, 53,213, 21,149, 46,103,142,119, 37, 73,227, 17,108,159,216,125,233,181, 99, 38,118, 58,137, 71,251, 29,133,
 ]);
 
+// Precomputed (b - 127.5) / 255 so the composite loop indexes a Float32 LUT
+// directly instead of doing the conversion per pixel per channel.
+const blueNoiseF32 = new Float32Array(blueNoise.length);
+for (let i = 0; i < blueNoise.length; i++) blueNoiseF32[i] = (blueNoise[i] - 127.5) * INV_255;
+
 
 // ─── ONNX Runtime ────────────────────────────────────────────────────────────
 let ortSession = null;
@@ -358,27 +363,23 @@ async function loadModel() {
   // Android Chrome: NNAPI (WebNN) is unreliable across devices and GPU overhead
   // for a model this small doesn't pay off on shared mobile memory bandwidth.
   const useGPU = !isMobile;
+  const tryAccel = useGPU || isSafari;
 
-  if (useGPU || isSafari) {
-    if ('ml' in navigator) {
-      // 1. WebNN GPU – native OS ML API (DirectML on Windows, Core ML on Apple).
-      //    Lowest overhead for small models; Core ML is especially fast on Apple silicon.
-      ortSession = await tryProvider(modelPath, { ...baseOpts, executionProviders: [{ name: 'webnn', deviceType: 'gpu', powerPreference: 'default' }] }, 'WebNN GPU');
-      if (ortSession) return;
-      // 2. WebNN CPU – native OS ML API on CPU.
-      ortSession = await tryProvider(modelPath, { ...baseOpts, executionProviders: [{ name: 'webnn', deviceType: 'cpu', powerPreference: 'default' }] }, 'WebNN CPU');
-      if (ortSession) return;
-    }
-    // 3. WebGPU – Metal on Safari, Dawn on Chromium, available on Firefox too.
-    if ('gpu' in navigator) {
-      ortSession = await tryProvider(modelPath, { ...baseOpts, executionProviders: ['webgpu'] }, 'WebGPU');
-      if (ortSession) return;
-    }
+  // Ordered preference list. Each entry is one provider attempt; first to succeed wins.
+  // 1-2: WebNN  – native OS ML API (DirectML on Windows, Core ML on Apple). Lowest overhead.
+  // 3:   WebGPU – Metal on Safari, Dawn on Chromium, also Firefox.
+  // 4:   WASM   – SIMD + threads when available. Primary path on mobile; final fallback elsewhere.
+  const providers = [
+    tryAccel && 'ml'  in navigator && { ep: { name: 'webnn', deviceType: 'gpu', powerPreference: 'default' }, label: 'WebNN GPU' },
+    tryAccel && 'ml'  in navigator && { ep: { name: 'webnn', deviceType: 'cpu', powerPreference: 'default' }, label: 'WebNN CPU' },
+    tryAccel && 'gpu' in navigator && { ep: 'webgpu', label: 'WebGPU' },
+    { ep: 'wasm', label: 'WASM' },
+  ].filter(Boolean);
+
+  for (const { ep, label } of providers) {
+    ortSession = await tryProvider(modelPath, { ...baseOpts, executionProviders: [ep] }, label);
+    if (ortSession) return;
   }
-
-  // 4. WASM – SIMD + threads when available. Primary path on mobile; final fallback elsewhere.
-  ortSession = await tryProvider(modelPath, { ...baseOpts, executionProviders: ['wasm'] }, 'WASM');
-  if (ortSession) return;
   throw new Error('No supported execution provider found (tried WebNN, WebGPU, WASM).');
 }
 
@@ -399,6 +400,8 @@ function featherW(d, isEdge, ovl) {
 
 // Builds the padded luma Float32Array for one tile. Even spatial dims required by
 // the model; odd-length edges are extended by replicating the last pixel.
+// A fresh buffer is allocated per tile because ORT proxy mode transfers
+// (detaches) the tensor's ArrayBuffer to the worker.
 function buildTileInput(pixels, w, h, x0, y0, x1, y1) {
   const tw = x1 - x0, th = y1 - y0;
   const pw = tw + (tw & 1), ph = th + (th & 1);
@@ -495,12 +498,9 @@ async function runDenoiser(pixels, w, h) {
     }
   }
 
-  // Normalise accumulated luma and composite with original chroma.
+  // Normalise accumulated luma and composite with original chroma in one pass.
   // Adding the luma delta uniformly to each RGB channel is mathematically
   // equivalent to a full BT.709 YCbCr round-trip with original Cb/Cr.
-  const denoisedY = new Float32Array(w * h);
-  for (let i = 0; i < w * h; i++) denoisedY[i] = accumY[i] / accumW[i];
-
   const outPixels = new Uint8ClampedArray(w * h * 4);
   for (let py = 0; py < h; py++) {
     const ditherR = (py & 63) * 64;
@@ -512,10 +512,10 @@ async function runDenoiser(pixels, w, h) {
       const pi = i * 4;
       const r = pixels[pi], g = pixels[pi + 1], b = pixels[pi + 2];
       const origY = Y_R_INV255 * r + Y_G_INV255 * g + Y_B_INV255 * b;
-      const deltaY255 = (denoisedY[i] - origY) * 255;
-      const dR = (blueNoise[ditherR +  (px        & 63)] - 127.5) * INV_255;
-      const dG = (blueNoise[ditherG + ((px + 17)  & 63)] - 127.5) * INV_255;
-      const dB = (blueNoise[ditherB + ((px + 37)  & 63)] - 127.5) * INV_255;
+      const deltaY255 = (accumY[i] / accumW[i] - origY) * 255;
+      const dR = blueNoiseF32[ditherR +  (px        & 63)];
+      const dG = blueNoiseF32[ditherG + ((px + 17)  & 63)];
+      const dB = blueNoiseF32[ditherB + ((px + 37)  & 63)];
       outPixels[pi]     = r + deltaY255 + dR;
       outPixels[pi + 1] = g + deltaY255 + dG;
       outPixels[pi + 2] = b + deltaY255 + dB;
@@ -563,6 +563,27 @@ function clampZoomPan() {
   S.zoomPanY = Math.max(-maxPY, Math.min(maxPY, S.zoomPanY));
 }
 
+// At minZoom the image is fit-to-viewer with no usable pan, so snap pan to 0;
+// otherwise apply the caller-computed pan and clamp it to the viewer bounds.
+function setZoomAndPan(newZoom, panX, panY) {
+  if (newZoom <= S.minZoom) {
+    S.zoom = S.minZoom;
+    S.zoomPanX = 0;
+    S.zoomPanY = 0;
+  } else {
+    S.zoom = newZoom;
+    S.zoomPanX = panX;
+    S.zoomPanY = panY;
+    clampZoomPan();
+  }
+}
+
+function commitZoomView() {
+  updateZoomClass();
+  applyZoomTransform();
+  requestAnimationFrame(() => applyViewerState());
+}
+
 // ─── reveal / compare ────────────────────────────────────────────────────────
 function applyRevealState(cursorX, showLine) {
   const vr = getViewerRect();
@@ -607,9 +628,7 @@ function renderViewer() {
     // cvBefore already has inputImg; applyViewerState will call showOriginal()
     // to fully clip cvAfter, so no paint needed here.
   }
-  applyZoomTransform();
-  updateZoomClass();
-  requestAnimationFrame(() => applyViewerState());
+  commitZoomView();
 }
 
 // ─── scroll-to-zoom ───────────────────────────────────────────────────────────
@@ -622,16 +641,12 @@ viewer.addEventListener('wheel', e => {
   const cy = e.clientY - vr.top  - vr.height / 2;
   const oldZoom = S.zoom;
   const newZoom = Math.max(S.minZoom, Math.min(4, oldZoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
-  if (newZoom <= S.minZoom) {
-    S.zoom = S.minZoom; S.zoomPanX = 0; S.zoomPanY = 0;
-  } else {
-    S.zoomPanX = cx - (cx - S.zoomPanX) * newZoom / oldZoom;
-    S.zoomPanY = cy - (cy - S.zoomPanY) * newZoom / oldZoom;
-    S.zoom = newZoom;
-    clampZoomPan();
-  }
-  updateZoomClass(); applyZoomTransform();
-  requestAnimationFrame(() => applyViewerState());
+  setZoomAndPan(
+    newZoom,
+    cx - (cx - S.zoomPanX) * newZoom / oldZoom,
+    cy - (cy - S.zoomPanY) * newZoom / oldZoom,
+  );
+  commitZoomView();
 }, { passive: false });
 
 // ─── pointer interactions ─────────────────────────────────────────────────────
@@ -679,8 +694,8 @@ viewer.addEventListener('pointermove', e => {
   if (S.panning) {
     S.zoomPanX = S.panStartPanX + (e.clientX - S.panStartX);
     S.zoomPanY = S.panStartPanY + (e.clientY - S.panStartY);
-    clampZoomPan(); applyZoomTransform();
-    requestAnimationFrame(() => applyViewerState());
+    clampZoomPan();
+    commitZoomView();
   } else if (!isMobile && !S.comparing && S.denoisedImg) {
     setReveal(S.lastCursorX);
   }
@@ -774,16 +789,12 @@ if (isMobile) {
     const cx    = (a.clientX + b.clientX) / 2 - vr.left - vr.width  / 2;
     const cy    = (a.clientY + b.clientY) / 2 - vr.top  - vr.height / 2;
     const newZoom = Math.max(S.minZoom, Math.min(4, _pinch.zoom0 * dist / _pinch.dist0));
-    if (newZoom <= S.minZoom) {
-      S.zoom = S.minZoom; S.zoomPanX = 0; S.zoomPanY = 0;
-    } else {
-      S.zoomPanX = _pinch.cx0 - (_pinch.cx0 - _pinch.panX0) * newZoom / _pinch.zoom0 + (cx - _pinch.cx0);
-      S.zoomPanY = _pinch.cy0 - (_pinch.cy0 - _pinch.panY0) * newZoom / _pinch.zoom0 + (cy - _pinch.cy0);
-      S.zoom = newZoom;
-      clampZoomPan();
-    }
-    updateZoomClass(); applyZoomTransform();
-    requestAnimationFrame(() => applyViewerState());
+    setZoomAndPan(
+      newZoom,
+      _pinch.cx0 - (_pinch.cx0 - _pinch.panX0) * newZoom / _pinch.zoom0 + (cx - _pinch.cx0),
+      _pinch.cy0 - (_pinch.cy0 - _pinch.panY0) * newZoom / _pinch.zoom0 + (cy - _pinch.cy0),
+    );
+    commitZoomView();
   }, { passive: false });
 
   viewer.addEventListener('touchend', e => { if (e.touches.length < 2) _pinch = null; });
@@ -796,8 +807,7 @@ window.addEventListener('resize', () => {
   computeMinZoom();
   S.zoom = Math.max(S.zoom, S.minZoom);
   clampZoomPan();
-  updateZoomClass(); applyZoomTransform();
-  requestAnimationFrame(() => applyViewerState());
+  commitZoomView();
 });
 
 // ─── image loading ────────────────────────────────────────────────────────────
@@ -889,8 +899,7 @@ document.addEventListener('drop', e => { e.preventDefault(); const f = e.dataTra
 function resetToNative() {
   if (!S.inputImg) return;
   S.zoom = 1; S.zoomPanX = 0; S.zoomPanY = 0;
-  updateZoomClass(); applyZoomTransform();
-  requestAnimationFrame(() => applyViewerState());
+  commitZoomView();
 }
 
 // Use OffscreenCanvas when available: it is not tied to the display rendering
