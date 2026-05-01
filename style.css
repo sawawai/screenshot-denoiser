@@ -38,6 +38,8 @@
 html {
   height: 100%;
   font-size: clamp(14px, 1.2vw, 18px);
+  touch-action: none;
+  overscroll-behavior: none;
 }
 
 body {

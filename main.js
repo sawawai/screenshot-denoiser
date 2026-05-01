@@ -853,6 +853,22 @@ document.addEventListener('touchmove', e => {
   if (e.touches.length > 1) e.preventDefault();
 }, { passive: false });
 
+// iOS Safari ignores user-scalable=no and fires its own gesture* events for
+// pinch on the page itself — without preventing them, the page zooms and the
+// header / mobile-bar / labels can drift off-screen.
+['gesturestart', 'gesturechange', 'gestureend'].forEach(evt => {
+  document.addEventListener(evt, e => e.preventDefault(), { passive: false });
+});
+
+// Safety net: never let the layout viewport scroll. body has overflow:hidden,
+// but iOS occasionally shifts it (keyboard dismiss, gesture edge swipes), which
+// would push fixed UI chrome off-screen.
+const _pinScroll = () => { if (window.scrollX || window.scrollY) window.scrollTo(0, 0); };
+window.addEventListener('scroll', _pinScroll, { passive: true });
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('scroll', _pinScroll);
+}
+
 // ─── mobile pinch-zoom ───────────────────────────────────────────────────────
 if (isMobile) {
   let _pinch = null;
