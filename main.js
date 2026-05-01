@@ -646,29 +646,35 @@ function applyZoomTransform() {
   cvAfter.style.width  = wpx; cvAfter.style.height  = hpx; cvAfter.style.transform  = tx;
 }
 
-function clampZoomPan() {
+function clampZoomPan(inGesture = false) {
   const vr = getViewerRect();
   const scaledW = S.inputImg.width  * S.zoom;
   const scaledH = S.inputImg.height * S.zoom;
   const margin = 40;
-  const maxPX = scaledW > vr.width  ? Math.max(0, vr.width  / 2 + scaledW / 2 - margin) : 0;
-  const maxPY = scaledH > vr.height ? Math.max(0, vr.height / 2 + scaledH / 2 - margin) : 0;
+  // During a pinch, allow the image to drift even when it fits the viewer, so
+  // the gesture stays continuous; settlePinchView() animates it back on release.
+  const slackX = inGesture ? vr.width  / 3 : 0;
+  const slackY = inGesture ? vr.height / 3 : 0;
+  const maxPX = scaledW > vr.width  ? Math.max(0, vr.width  / 2 + scaledW / 2 - margin) : slackX;
+  const maxPY = scaledH > vr.height ? Math.max(0, vr.height / 2 + scaledH / 2 - margin) : slackY;
   S.zoomPanX = Math.max(-maxPX, Math.min(maxPX, S.zoomPanX));
   S.zoomPanY = Math.max(-maxPY, Math.min(maxPY, S.zoomPanY));
 }
 
 // At minZoom the image is fit-to-viewer with no usable pan, so snap pan to 0;
 // otherwise apply the caller-computed pan and clamp it to the viewer bounds.
-function setZoomAndPan(newZoom, panX, panY) {
-  if (newZoom <= S.minZoom) {
+// Pass inGesture=true from continuous-input handlers (pinch) to skip the snap
+// and permit pan slack — settlePinchView() reclaims it smoothly on release.
+function setZoomAndPan(newZoom, panX, panY, inGesture = false) {
+  if (newZoom <= S.minZoom && !inGesture) {
     S.zoom = S.minZoom;
     S.zoomPanX = 0;
     S.zoomPanY = 0;
   } else {
-    S.zoom = newZoom;
+    S.zoom = Math.max(S.minZoom, newZoom);
     S.zoomPanX = panX;
     S.zoomPanY = panY;
-    clampZoomPan();
+    clampZoomPan(inGesture);
   }
 }
 
@@ -871,11 +877,37 @@ if (window.visualViewport) {
 
 // ─── mobile pinch-zoom ───────────────────────────────────────────────────────
 if (isMobile) {
+  const SETTLE_MS = 200;
   let _pinch = null;
+  let _settleTimer = null;
+
+  const clearSettleTransition = () => {
+    cvBefore.style.transition = '';
+    cvAfter.style.transition  = '';
+    if (_settleTimer) { clearTimeout(_settleTimer); _settleTimer = null; }
+  };
+
+  // Animate from the pinch's slack-permitting state back to a strictly-clamped,
+  // centered-at-minZoom resting state. Avoids the mid-gesture teleport that the
+  // hard pan→0 snap caused when zooming out hit minZoom under continuous input.
+  const settlePinchView = () => {
+    const oldX = S.zoomPanX, oldY = S.zoomPanY;
+    setZoomAndPan(S.zoom, S.zoomPanX, S.zoomPanY); // strict (no inGesture)
+    if (Math.hypot(S.zoomPanX - oldX, S.zoomPanY - oldY) < 0.5) {
+      commitZoomView();
+      return;
+    }
+    cvBefore.style.transition = `transform ${SETTLE_MS}ms ease-out`;
+    cvAfter.style.transition  = `transform ${SETTLE_MS}ms ease-out`;
+    applyZoomTransform();
+    requestAnimationFrame(() => applyViewerState());
+    _settleTimer = setTimeout(clearSettleTransition, SETTLE_MS + 40);
+  };
 
   viewer.addEventListener('touchstart', e => {
     if (e.touches.length !== 2) return;
     e.preventDefault();
+    clearSettleTransition(); // a new pinch overrides any in-flight settle
     S.tapStartTime = 0; // cancel any pending tap
     S.pointerDown = false; S.panning = false;
     viewer.classList.remove('panning-active');
@@ -903,11 +935,18 @@ if (isMobile) {
       newZoom,
       _pinch.cx0 - (_pinch.cx0 - _pinch.panX0) * newZoom / _pinch.zoom0 + (cx - _pinch.cx0),
       _pinch.cy0 - (_pinch.cy0 - _pinch.panY0) * newZoom / _pinch.zoom0 + (cy - _pinch.cy0),
+      true,
     );
     commitZoomView();
   }, { passive: false });
 
-  viewer.addEventListener('touchend', e => { if (e.touches.length < 2) _pinch = null; });
+  const onPinchTouchEnd = e => {
+    if (e.touches.length >= 2 || !_pinch) return;
+    _pinch = null;
+    settlePinchView();
+  };
+  viewer.addEventListener('touchend',    onPinchTouchEnd);
+  viewer.addEventListener('touchcancel', onPinchTouchEnd);
 }
 
 // ─── window resize ────────────────────────────────────────────────────────────
