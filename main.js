@@ -61,9 +61,7 @@ function invalidateCvAfterRect() { _cvAfterRect = null; }
 const TILE = isMobile ? 256 : 512;
 const OVL  = isMobile ? 32  : 64;
 
-// Working memory scales with pixel count (input + accumulators + output ≈ 16 B/px,
-// not counting per-tile float buffers). Mobile heaps are tighter, so cap lower.
-const MAX_MEGAPIXELS = isMobile ? 12 : 48;
+const MAX_MEGAPIXELS = 48;
 
 // ─── i18n ────────────────────────────────────────────────────────────────────
 const TX = {
