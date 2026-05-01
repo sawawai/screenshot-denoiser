@@ -13,7 +13,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;600&display=swap">
-  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 19H5c-1 0-2-1-2-2V7c0-1 1-2 2-2h3'/%3E%3Cpath d='M16 5h3c1 0 2 1 2 2v10c0 1-1 2-2 2h-3'/%3E%3Cline x1='12' x2='12' y1='4' y2='20'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
   <script src="coi-serviceworker.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.all.min.js"></script>
@@ -28,25 +28,31 @@
     <symbol id="icon-new" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <path d="M3 12a9 9 0 1 0 2.1-5.8M3 4v5h5"/>
     </symbol>
+    <symbol id="icon-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 19H5c-1 0-2-1-2-2V7c0-1 1-2 2-2h3"/>
+      <path d="M16 5h3c1 0 2 1 2 2v10c0 1-1 2-2 2h-3"/>
+      <line x1="12" x2="12" y1="4" y2="20"/>
+    </symbol>
   </defs>
 </svg>
 
 <header id="hdr">
+  <svg id="hdr-logo" width="22" height="22" aria-hidden="true"><use href="#icon-logo"/></svg>
   <h1 id="t-title">スクショ補正</h1>
 
   <div id="hdr-right">
-    <button class="btn" id="btn-save" disabled>
+    <button class="btn" id="btn-save" aria-label="保存" disabled>
       <svg width="14" height="14" aria-hidden="true"><use href="#icon-save"/></svg>
       <span id="t-btn-save"></span>
     </button>
-    <button class="btn" id="btn-new" disabled>
+    <button class="btn" id="btn-new" aria-label="新規" disabled>
       <svg width="14" height="14" aria-hidden="true"><use href="#icon-new"/></svg>
       <span id="t-btn-new"></span>
     </button>
   </div>
-  <div class="lang-switch">
-    <button class="active" onclick="setLang('ja')">日本語</button>
-    <button onclick="setLang('en')">English</button>
+  <div class="lang-switch" role="group" aria-label="言語">
+    <button data-lang="ja" class="active" aria-pressed="true">日本語</button>
+    <button data-lang="en"               aria-pressed="false">English</button>
   </div>
 </header>
 
@@ -71,15 +77,16 @@
     </div>
   </div>
 
-  <p id="t-drop-desc" class="drop-desc"></p>
-
-  <div id="controls-hint">
-    <span class="hint-desc" id="t-hint-reveal"></span><span class="hint-key" id="t-hint-key-hover"></span>
-    <span class="hint-desc" id="t-hint-original"></span><span class="hint-key" id="t-hint-key-hold"></span>
-    <span class="hint-desc" id="t-hint-zoom"></span><span class="hint-key" id="t-hint-key-scroll"></span>
-    <span class="hint-desc" id="t-hint-reset"></span><span class="hint-key" id="t-hint-key-dbl"></span>
-    <span class="hint-desc" id="t-hint-save"></span><span class="hint-key"><kbd>Ctrl+S</kbd></span>
-    <span class="hint-desc" id="t-hint-new"></span><span class="hint-key"><kbd>Esc</kbd></span>
+  <div id="drop-secondary">
+    <p id="t-drop-desc" class="drop-desc"></p>
+    <div id="controls-hint">
+      <span class="hint-desc" id="t-hint-reveal"></span><span class="hint-key" id="t-hint-key-hover"></span>
+      <span class="hint-desc" id="t-hint-original"></span><span class="hint-key" id="t-hint-key-hold"></span>
+      <span class="hint-desc" id="t-hint-zoom"></span><span class="hint-key" id="t-hint-key-scroll"></span>
+      <span class="hint-desc" id="t-hint-reset"></span><span class="hint-key" id="t-hint-key-dbl"></span>
+      <span class="hint-desc" id="t-hint-save"></span><span class="hint-key"><kbd>Ctrl+S</kbd></span>
+      <span class="hint-desc" id="t-hint-new"></span><span class="hint-key"><kbd>Esc</kbd></span>
+    </div>
   </div>
 
   <div id="notice">
@@ -104,11 +111,11 @@
 </div>
 
 <div id="mobile-bar">
-  <button class="btn" id="mob-save" disabled>
+  <button class="btn" id="mob-save" aria-label="保存" disabled>
     <svg width="16" height="16" aria-hidden="true"><use href="#icon-save"/></svg>
     <span id="t-mob-save"></span>
   </button>
-  <button class="btn" id="mob-new" disabled>
+  <button class="btn" id="mob-new" aria-label="新規" disabled>
     <svg width="16" height="16" aria-hidden="true"><use href="#icon-new"/></svg>
     <span id="t-mob-new"></span>
   </button>

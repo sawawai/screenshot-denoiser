@@ -36,8 +36,9 @@ const btnSave      = $('btn-save');
 const btnNew       = $('btn-new');
 const mobSave      = $('mob-save');
 const mobNew       = $('mob-new');
-const controlsHint = $('controls-hint');
-const tDropDesc    = $('t-drop-desc');
+const controlsHint  = $('controls-hint');
+const tDropDesc     = $('t-drop-desc');
+const dropSecondary = $('drop-secondary');
 const tDropLabel   = $('t-drop-label');
 const tDropSub     = $('t-drop-sub');
 const fileInput    = $('file-input');
@@ -60,6 +61,10 @@ function invalidateCvAfterRect() { _cvAfterRect = null; }
 const TILE = isMobile ? 256 : 512;
 const OVL  = isMobile ? 32  : 64;
 
+// Working memory scales with pixel count (input + accumulators + output ≈ 16 B/px,
+// not counting per-tile float buffers). Mobile heaps are tighter, so cap lower.
+const MAX_MEGAPIXELS = isMobile ? 12 : 48;
+
 // ─── i18n ────────────────────────────────────────────────────────────────────
 const TX = {
   ja: {
@@ -72,7 +77,7 @@ const TX = {
     'label-after':     '処理後',
     'hint-reveal':     '処理前後を比較',
     'hint-original':   '元画像を表示',
-    'hint-zoom':       'ズームイン / アウト',
+    'hint-zoom':       '拡大 / 縮小',
     'hint-reset':      '等倍にリセット',
     'hint-save':       '処理結果を保存',
     'hint-new':        '新しい画像',
@@ -85,6 +90,8 @@ const TX = {
     'drop-desc':           'スクリーンショットから動画圧縮ノイズを除去します<br>すべてブラウザ内で完結します',
     'mob-tap-hint':        'タップして処理前後を比較',
     'drop-label-loading':  '読み込み中…',
+    'lang-aria':           '言語',
+    'image-too-large':     '画像が大きすぎます（{0} MP）。{1} MP までの画像をご利用ください。',
   },
   en: {
     'title':           'Screenshot Denoiser',
@@ -94,10 +101,10 @@ const TX = {
     'btn-new':         'New',
     'label-before':    'Before',
     'label-after':     'After',
-    'hint-reveal':     'Reveal before / after',
+    'hint-reveal':     'Before / after',
     'hint-original':   'Show original',
     'hint-zoom':       'Zoom in / out',
-    'hint-reset':      'Reset to 1:1',
+    'hint-reset':      'Reset zoom',
     'hint-save':       'Save result',
     'hint-new':        'New image',
     'hint-key-hover':  'Hover',
@@ -109,6 +116,8 @@ const TX = {
     'drop-desc':           'Removes video compression artifacts from screenshots.<br>Runs entirely in the browser.',
     'mob-tap-hint':        'Tap to compare',
     'drop-label-loading':  'Initializing…',
+    'lang-aria':           'Language',
+    'image-too-large':     'Image is too large ({0} MP). Maximum supported size is {1} MP.',
   },
 };
 
@@ -145,14 +154,22 @@ const _tEntries = Object.entries(tMap)
   .map(([id, key]) => [$(id), key])
   .filter(([el]) => el);
 const _langButtons = document.querySelectorAll('.lang-switch button');
+const _langSwitch = document.querySelector('.lang-switch');
+// Icon buttons whose aria-label should mirror the localised visible text.
+const _ariaButtons = [[btnSave, 'btn-save'], [btnNew, 'btn-new'], [mobSave, 'btn-save'], [mobNew, 'btn-new']];
+_langButtons.forEach(b => b.addEventListener('click', () => setLang(b.dataset.lang)));
 
 function applyLang() {
   document.documentElement.lang = lang;
   document.title = t('title');
   for (const [el, key] of _tEntries) el.innerHTML = t(key);
-  _langButtons.forEach((b, i) => {
-    b.classList.toggle('active', (i === 0 && lang === 'ja') || (i === 1 && lang === 'en'));
+  _langButtons.forEach(b => {
+    const active = b.dataset.lang === lang;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-pressed', active ? 'true' : 'false');
   });
+  if (_langSwitch) _langSwitch.setAttribute('aria-label', t('lang-aria'));
+  for (const [el, key] of _ariaButtons) el.setAttribute('aria-label', t(key));
   if (isMobile) {
     tDropLabel.innerHTML = t('drop-label-mobile');
     tDropSub.innerHTML   = t('drop-sub-mobile');
@@ -398,52 +415,82 @@ function featherW(d, isEdge, ovl) {
   return 0.5 - 0.5 * Math.cos(Math.PI * t);
 }
 
+// Per-tile boundary clamps + feather weights, written into the caller-owned
+// wx / wyArr buffers. Returned ramp boundaries split each axis into three
+// regions: [0, rampL) ramps up, [rampL, rampR) is full weight (1.0), and
+// [rampR, dim) ramps down. At the image edge there's no neighbour to blend
+// with, so that side's ramp collapses (rampL = 0 or rampR = dim).
+function tileLayout(tx, ty, w, h, wx, wyArr) {
+  const x0 = Math.max(0, tx - OVL);
+  const y0 = Math.max(0, ty - OVL);
+  const x1 = Math.min(w, tx + TILE + OVL);
+  const y1 = Math.min(h, ty + TILE + OVL);
+  const tw = x1 - x0, th = y1 - y0;
+  const atLeft = x0 === 0, atRight = x1 === w;
+  const atTop  = y0 === 0, atBot   = y1 === h;
+  for (let x = 0; x < tw; x++)
+    wx[x] = featherW(x, atLeft, OVL) * featherW(tw - 1 - x, atRight, OVL);
+  for (let y = 0; y < th; y++)
+    wyArr[y] = featherW(y, atTop, OVL) * featherW(th - 1 - y, atBot, OVL);
+  return {
+    x0, y0, x1, y1, tw, th,
+    xRampL: atLeft  ? 0  : OVL,
+    xRampR: atRight ? tw : tw - OVL,
+    yRampL: atTop   ? 0  : OVL,
+    yRampR: atBot   ? th : th - OVL,
+  };
+}
+
 // Builds the padded luma Float32Array for one tile. Even spatial dims required by
 // the model; odd-length edges are extended by replicating the last pixel.
 // A fresh buffer is allocated per tile because ORT proxy mode transfers
-// (detaches) the tensor's ArrayBuffer to the worker.
-function buildTileInput(pixels, w, h, x0, y0, x1, y1) {
+// (detaches) the tensor's ArrayBuffer to the worker. Reads from a precomputed
+// full-image luma so overlapping tiles don't recompute Y from RGB.
+function buildTileInput(lumaImg, w, h, x0, y0, x1, y1) {
   const tw = x1 - x0, th = y1 - y0;
   const pw = tw + (tw & 1), ph = th + (th & 1);
   const luma = new Float32Array(pw * ph);
-  const yAt = p => Y_R_INV255 * pixels[p] + Y_G_INV255 * pixels[p + 1] + Y_B_INV255 * pixels[p + 2];
 
   for (let y = 0; y < th; y++) {
-    const srcBase = (y0 + y) * w + x0;
-    const dstBase = y * pw;
-    for (let x = 0; x < tw; x++) {
-      luma[dstBase + x] = yAt((srcBase + x) * 4);
-    }
+    const srcOff = (y0 + y) * w + x0;
+    luma.set(lumaImg.subarray(srcOff, srcOff + tw), y * pw);
   }
   if (pw > tw) {
     const padX = Math.min(x1, w - 1);
     for (let y = 0; y < th; y++) {
-      luma[y * pw + tw] = yAt(((y0 + y) * w + padX) * 4);
+      luma[y * pw + tw] = lumaImg[(y0 + y) * w + padX];
     }
   }
   if (ph > th) {
     const padY = Math.min(y1, h - 1);
-    const srcBase = padY * w;
-    for (let x = 0; x < tw; x++) {
-      luma[th * pw + x] = yAt((srcBase + x0 + x) * 4);
-    }
+    const srcOff = padY * w + x0;
+    luma.set(lumaImg.subarray(srcOff, srcOff + tw), th * pw);
     if (pw > tw) {
       const padX = Math.min(x1, w - 1);
-      luma[th * pw + tw] = yAt((srcBase + padX) * 4);
+      luma[th * pw + tw] = lumaImg[padY * w + padX];
     }
   }
   return { luma, pw, ph, tw, th };
 }
 
-async function runDenoiser(pixels, w, h) {
+async function runDenoiser(pixels, w, h, gen) {
   if (!ortReady) throw new Error(t('model-not-ready'));
 
   const inputName  = ortSession.inputNames[0];
   const outputName = ortSession.outputNames[0];
 
-  // Weighted accumulators for seamless blending across tile boundaries.
+  // Precompute luma once — overlapping tiles cover most pixels 2-4×, and the
+  // composite loop also needs origY. One pass here saves ~3 mults + 3 byte
+  // loads per pixel in tile prep AND in the final composite.
+  const lumaImg = new Float32Array(w * h);
+  for (let i = 0, pi = 0; i < lumaImg.length; i++, pi += 4) {
+    lumaImg[i] = Y_R_INV255 * pixels[pi] + Y_G_INV255 * pixels[pi + 1] + Y_B_INV255 * pixels[pi + 2];
+  }
+
+  // Weighted luma accumulator. accumW (the matching weight sum) is replaced by
+  // invW below — feather weights depend only on tile geometry, so we can sum
+  // them once up front and skip the per-pixel weight write in the main pass.
   const accumY = new Float32Array(w * h);
-  const accumW = new Float32Array(w * h);
 
   const xs = tileStarts(w, TILE);
   const ys = tileStarts(h, TILE);
@@ -455,46 +502,93 @@ async function runDenoiser(pixels, w, h) {
   const wx    = new Float32Array(maxDim);
   const wyArr = new Float32Array(maxDim);
 
+  // ── Pre-pass: sum feather weights into invW, then invert ───────────────
+  // Composite multiplies by invW instead of dividing by accumW (much cheaper),
+  // and the main pass below skips the per-pixel `accumW += wi` write entirely.
+  // Each row is split on the x-axis into ramp / interior / ramp; rows are
+  // split on the y-axis the same way, so wherever wx or wy is exactly 1 the
+  // multiplication drops out.
+  const invW = new Float32Array(w * h);
+  let prepDone = 0;
   for (const ty of ys) {
     for (const tx of xs) {
-      // Expand each tile by OVL on every side (clamped to image bounds) so the
-      // model sees context beyond the canonical region; avoids border artifacts.
-      const x0 = Math.max(0, tx - OVL);
-      const y0 = Math.max(0, ty - OVL);
-      const x1 = Math.min(w, tx + TILE + OVL);
-      const y1 = Math.min(h, ty + TILE + OVL);
-      const { luma, pw, ph, tw, th } = buildTileInput(pixels, w, h, x0, y0, x1, y1);
+      const { x0, y0, tw, th, xRampL, xRampR, yRampL, yRampR } = tileLayout(tx, ty, w, h, wx, wyArr);
+      // Top ramp rows (wy < 1)
+      for (let y = 0; y < yRampL; y++) {
+        const wy = wyArr[y];
+        const dst = (y0 + y) * w + x0;
+        for (let x = 0;       x < xRampL; x++) invW[dst + x] += wy * wx[x];
+        for (let x = xRampL;  x < xRampR; x++) invW[dst + x] += wy;
+        for (let x = xRampR;  x < tw;     x++) invW[dst + x] += wy * wx[x];
+      }
+      // Interior rows (wy === 1)
+      for (let y = yRampL; y < yRampR; y++) {
+        const dst = (y0 + y) * w + x0;
+        for (let x = 0;       x < xRampL; x++) invW[dst + x] += wx[x];
+        for (let x = xRampL;  x < xRampR; x++) invW[dst + x] += 1;
+        for (let x = xRampR;  x < tw;     x++) invW[dst + x] += wx[x];
+      }
+      // Bottom ramp rows (wy < 1)
+      for (let y = yRampR; y < th; y++) {
+        const wy = wyArr[y];
+        const dst = (y0 + y) * w + x0;
+        for (let x = 0;       x < xRampL; x++) invW[dst + x] += wy * wx[x];
+        for (let x = xRampL;  x < xRampR; x++) invW[dst + x] += wy;
+        for (let x = xRampR;  x < tw;     x++) invW[dst + x] += wy * wx[x];
+      }
+      // Yield occasionally so the pre-pass can't freeze the UI on huge images.
+      if ((++prepDone & 7) === 0) {
+        await tick();
+        if (gen !== _loadGen) return null;
+      }
+    }
+  }
+  for (let i = 0; i < invW.length; i++) invW[i] = 1 / invW[i];
+
+  // ── Main pass: model inference + accumulation into accumY ──────────────
+  for (const ty of ys) {
+    for (const tx of xs) {
+      const { x0, y0, x1, y1, tw, th, xRampL, xRampR, yRampL, yRampR } = tileLayout(tx, ty, w, h, wx, wyArr);
+      const { luma, pw, ph } = buildTileInput(lumaImg, w, h, x0, y0, x1, y1);
       const feeds = { [inputName]: new ort.Tensor('float32', luma, [1, 1, ph, pw]) };
       const results = await ortSession.run(feeds);
+      if (gen !== _loadGen) return null;
       const outData = results[outputName].data;
 
-      // Accumulate denoised luma with feather weights. Pixels near interior seams
-      // get lower weight so adjacent tiles blend smoothly; image-border pixels
-      // keep full weight since no neighbour tile exists on that side.
-      const atLeft  = x0 === 0;
-      const atRight = x1 === w;
-      const atTop   = y0 === 0;
-      const atBot   = y1 === h;
-
-      for (let x = 0; x < tw; x++)
-        wx[x] = featherW(x, atLeft, OVL) * featherW(tw - 1 - x, atRight, OVL);
-      for (let y = 0; y < th; y++)
-        wyArr[y] = featherW(y, atTop, OVL) * featherW(th - 1 - y, atBot, OVL);
-
-      for (let y = 0; y < th; y++) {
+      // Mirrors the invW pre-pass: drop wx and/or wy multiplications wherever
+      // the corresponding feather weight is exactly 1.
+      for (let y = 0; y < yRampL; y++) {
         const wy = wyArr[y];
-        const dstBase = (y0 + y) * w + x0;
-        const srcBase = y * pw;
-        for (let x = 0; x < tw; x++) {
-          const wi = wy * wx[x];
-          const di = dstBase + x;
-          accumY[di] += wi * outData[srcBase + x];
-          accumW[di] += wi;
-        }
+        const dst = (y0 + y) * w + x0;
+        const src = y * pw;
+        for (let x = 0;      x < xRampL; x++) accumY[dst + x] += wy * wx[x] * outData[src + x];
+        for (let x = xRampL; x < xRampR; x++) accumY[dst + x] += wy * outData[src + x];
+        for (let x = xRampR; x < tw;     x++) accumY[dst + x] += wy * wx[x] * outData[src + x];
+      }
+      for (let y = yRampL; y < yRampR; y++) {
+        const dst = (y0 + y) * w + x0;
+        const src = y * pw;
+        for (let x = 0;      x < xRampL; x++) accumY[dst + x] += wx[x] * outData[src + x];
+        for (let x = xRampL; x < xRampR; x++) accumY[dst + x] += outData[src + x];
+        for (let x = xRampR; x < tw;     x++) accumY[dst + x] += wx[x] * outData[src + x];
+      }
+      for (let y = yRampR; y < th; y++) {
+        const wy = wyArr[y];
+        const dst = (y0 + y) * w + x0;
+        const src = y * pw;
+        for (let x = 0;      x < xRampL; x++) accumY[dst + x] += wy * wx[x] * outData[src + x];
+        for (let x = xRampL; x < xRampR; x++) accumY[dst + x] += wy * outData[src + x];
+        for (let x = xRampR; x < tw;     x++) accumY[dst + x] += wy * wx[x] * outData[src + x];
       }
 
       setProgress(Math.round(++done / total * 99));
-      await tick();
+      // ortSession.run already yields between tiles; the explicit yield is for
+      // paint scheduling, so once every few tiles is enough. Always yield on
+      // the final tile so the 99% bar paints before the composite pass starts.
+      if ((done & 3) === 0 || done === total) {
+        await tick();
+        if (gen !== _loadGen) return null;
+      }
     }
   }
 
@@ -511,8 +605,7 @@ async function runDenoiser(pixels, w, h) {
       const i = rowBase + px;
       const pi = i * 4;
       const r = pixels[pi], g = pixels[pi + 1], b = pixels[pi + 2];
-      const origY = Y_R_INV255 * r + Y_G_INV255 * g + Y_B_INV255 * b;
-      const deltaY255 = (accumY[i] / accumW[i] - origY) * 255;
+      const deltaY255 = (accumY[i] * invW[i] - lumaImg[i]) * 255;
       const dR = blueNoiseF32[ditherR +  (px        & 63)];
       const dG = blueNoiseF32[ditherG + ((px + 17)  & 63)];
       const dB = blueNoiseF32[ditherB + ((px + 37)  & 63)];
@@ -539,7 +632,10 @@ function computeMinZoom() {
 }
 
 function updateZoomClass() {
-  viewer.classList.toggle('zoom-mode', S.zoom > S.minZoom);
+  const vr = getViewerRect();
+  const scaledW = S.inputImg.width  * S.zoom;
+  const scaledH = S.inputImg.height * S.zoom;
+  viewer.classList.toggle('zoom-mode', scaledW > vr.width || scaledH > vr.height);
 }
 
 function applyZoomTransform() {
@@ -557,8 +653,8 @@ function clampZoomPan() {
   const scaledW = S.inputImg.width  * S.zoom;
   const scaledH = S.inputImg.height * S.zoom;
   const margin = 40;
-  const maxPX = Math.max(0, vr.width  / 2 + scaledW / 2 - margin);
-  const maxPY = Math.max(0, vr.height / 2 + scaledH / 2 - margin);
+  const maxPX = scaledW > vr.width  ? Math.max(0, vr.width  / 2 + scaledW / 2 - margin) : 0;
+  const maxPY = scaledH > vr.height ? Math.max(0, vr.height / 2 + scaledH / 2 - margin) : 0;
   S.zoomPanX = Math.max(-maxPX, Math.min(maxPX, S.zoomPanX));
   S.zoomPanY = Math.max(-maxPY, Math.min(maxPY, S.zoomPanY));
 }
@@ -810,6 +906,18 @@ window.addEventListener('resize', () => {
   commitZoomView();
 });
 
+// ─── drop zone / viewer toggle ───────────────────────────────────────────────
+function showViewer() {
+  dropIdle.style.display      = 'none';
+  dropSecondary.style.display = 'none';
+  viewer.style.display        = 'block';
+}
+function showDropZone() {
+  viewer.style.display        = 'none';
+  dropIdle.style.display      = '';
+  dropSecondary.style.display = '';
+}
+
 // ─── image loading ────────────────────────────────────────────────────────────
 function resetZoom() {
   S.zoom = 1; S.minZoom = 1; S.zoomPanX = 0; S.zoomPanY = 0;
@@ -828,10 +936,18 @@ function deriveSaveName(name) {
 async function loadFile(file) {
   if (!file || !file.type.startsWith('image/')) return;
   if (!ortReady) return;
+  hideError();
   S.saveName = deriveSaveName(file.name);
   setProgress(2);
   try {
     const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    const mp = bmp.width * bmp.height / 1e6;
+    if (mp > MAX_MEGAPIXELS) {
+      bmp.close();
+      setProgress(0);
+      showError(t('image-too-large').replace('{0}', mp.toFixed(1)).replace('{1}', MAX_MEGAPIXELS));
+      return;
+    }
     const tmp = document.createElement('canvas');
     tmp.width = bmp.width; tmp.height = bmp.height;
     const ctx = tmp.getContext('2d');
@@ -842,10 +958,7 @@ async function loadFile(file) {
     resetZoom();
     // Preserve cursorInViewer / lastCursorX — cursor may still be inside the
     // viewer when replacing an image, and no mouseenter will fire to restore them.
-    dropIdle.style.display              = 'none';
-    tDropDesc.style.display      = 'none';
-    controlsHint.style.display   = 'none';
-    viewer.style.display         = 'block';
+    showViewer();
     invalidateViewerRect();
     botBar.classList.remove('bot-bar-visible');
     computeMinZoom();
@@ -866,8 +979,8 @@ async function processAndShow(imgData, gen) {
   try { await _ortLoadPromise; } catch { return; }
   if (gen !== _loadGen) return;
   await tick();
-  const result = await runDenoiser(imgData.data, imgData.width, imgData.height);
-  if (gen !== _loadGen) return;
+  const result = await runDenoiser(imgData.data, imgData.width, imgData.height, gen);
+  if (gen !== _loadGen || result === null) return;
   S.denoisedImg = result;
   S.showingBefore = false;
   if (!isMobile) {
@@ -891,7 +1004,6 @@ document.addEventListener('paste', e => {
     if (item.type.startsWith('image/')) { loadFile(item.getAsFile()); break; }
 });
 document.addEventListener('dragenter', e => e.preventDefault());
-document.addEventListener('dragleave', e => e.preventDefault());
 document.addEventListener('dragover',  e => e.preventDefault());
 document.addEventListener('drop', e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) loadFile(f); });
 
@@ -954,23 +1066,16 @@ function clearImage() {
   S.inputImg = null; S.denoisedImg = null; S.showingBefore = false;
   S.comparing = false; S.pointerDown = false; S.lastCursorX = null; S.cursorInViewer = false;
   resetZoom();
-  viewer.style.display   = 'none';
+  showDropZone();
   invalidateViewerRect();
   invalidateCvAfterRect();
-  dropIdle.style.display = '';
-  tDropDesc.style.display = '';
   canvasArea.classList.remove('viewer-active');
   viewer.classList.remove('reveal-active', 'panning-active');
   setSaveEnabled(false); setNewEnabled(false);
   if (!isMobile) {
-    controlsHint.style.display = '';
     botBar.classList.remove('bot-bar-visible');
   }
-  progBar.classList.remove('indeterminate');
-  progBar.style.transition = 'none';
-  progBar.style.width = '0%';
-  void progBar.offsetWidth;
-  progBar.style.transition = '';
+  _clearIndeterminate();
   hideError();
   if (isMobile) { updateViewLabel(); mobTapHint.classList.remove('visible'); }
 }
@@ -999,14 +1104,17 @@ function hideError() {
   errorMsg.classList.remove('visible');
 }
 
+function _clearIndeterminate() {
+  progBar.classList.remove('indeterminate');
+  progBar.style.transition = 'none';
+  progBar.style.width = '0%';
+  void progBar.offsetWidth;
+  progBar.style.transition = '';
+}
 function setProgress(pct) {
   if (progBar.classList.contains('indeterminate')) {
-    progBar.classList.remove('indeterminate');
-    progBar.style.transition = 'none';
     progBar.style.opacity = '0';  // hide during snap so translateX reset is invisible
-    progBar.style.width = '0%';
-    void progBar.offsetWidth;     // anchor state before re-enabling transitions
-    progBar.style.transition = '';
+    _clearIndeterminate();
     progBar.style.opacity = '1';  // fade in while width grows
   }
   progBar.style.width = pct + '%';
@@ -1014,7 +1122,16 @@ function setProgress(pct) {
 function setProgressIndeterminate() {
   progBar.classList.add('indeterminate');
 }
-function tick() { return new Promise(r => setTimeout(r, 0)); }
+// MessageChannel postMessage round-trips faster than setTimeout(0), which the
+// HTML spec lets browsers clamp to ~1-4 ms. With many tiles the saved overhead
+// adds up to hundreds of ms.
+const _yieldPort = (() => {
+  const ch = new MessageChannel();
+  const queue = [];
+  ch.port1.onmessage = () => { const r = queue.shift(); if (r) r(); };
+  return r => { queue.push(r); ch.port2.postMessage(0); };
+})();
+function tick() { return new Promise(_yieldPort); }
 
 // ─── startup ──────────────────────────────────────────────────────────────────
 async function warmUp() {
@@ -1046,8 +1163,5 @@ async function main() {
 const savedLang = getCookie('lang');
 if (savedLang === 'ja' || savedLang === 'en') lang = savedLang;
 applyLang();
-
-// setLang must be globally accessible for inline onclick handlers in HTML
-window.setLang = setLang;
 
 main();

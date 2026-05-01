@@ -17,8 +17,7 @@
   --text-dark:    rgba(40, 30, 12, 0.82);
   --text-light:   #1c2138;
   --text-light-2: #4b5175;
-  --accent-base: #c57a2a;
-  --accent:      var(--accent-base);
+  --accent:      #c57a2a;
   --accent-dim:  color-mix(in srgb, var(--accent) 78%, white);
   --accent-bg:   color-mix(in srgb, var(--accent) 14%, transparent);
   --accent-bd:   color-mix(in srgb, var(--accent) 40%, transparent);
@@ -30,6 +29,9 @@
   --cream-subtle:         rgba(40, 30, 12, 0.36);
   --border-dim:           rgba(120, 105, 75, 0.20);
   --kbd-bg:               rgba(175, 155, 120, 0.16);
+  --error-color:          #d95c72;
+  --divider-color:        rgba(255, 255, 255, 0.90);
+  --divider-shadow:       0 0 0 1px rgba(0, 0, 0, 0.12), 0 0 14px rgba(0, 0, 0, 0.28);
   --font-ui: 'Noto Sans JP', sans-serif;
 }
 
@@ -63,11 +65,16 @@ body {
   z-index: 30;
 }
 #hdr h1 {
-  font-size: 0.9rem;
-  font-weight: 600;
+  font-size: 0.95rem;
+  font-weight: 700;
   white-space: nowrap;
   color: var(--text-dark);
-  letter-spacing: 0.01em;
+  letter-spacing: -0.005em;
+}
+#hdr-logo {
+  flex-shrink: 0;
+  color: var(--accent-dim);
+  transform: translateY(1px);
 }
 #hdr-right {
   margin-left: auto;
@@ -90,12 +97,35 @@ body {
   line-height: 1;
   white-space: nowrap;
   cursor: pointer;
-  transition: background .12s, border-color .12s;
+  box-shadow:
+    0 1px 2px rgba(55, 38, 12, 0.10),
+    inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  transition: background .12s, border-color .12s, box-shadow .12s;
 }
-.btn:hover    { background: var(--cream-surface-strong); border-color: rgba(120, 105, 75, 0.52); }
-.btn.active   { background: var(--accent); border-color: var(--accent); color: var(--white); }
-.btn:disabled { opacity: .35; cursor: default; }
-.btn svg      { flex-shrink: 0; width: 0.875rem; height: 0.875rem; }
+.btn:hover:not(:disabled) {
+  background: var(--cream-surface-strong);
+  border-color: rgba(120, 105, 75, 0.52);
+}
+.btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--white);
+  box-shadow:
+    0 1px 2px rgba(55, 38, 12, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.20);
+}
+.btn:disabled {
+  cursor: default;
+  background: color-mix(in srgb, var(--cream-surface) 55%, transparent);
+  border-color: color-mix(in srgb, var(--cream-border) 55%, transparent);
+  color: var(--cream-muted);
+  box-shadow: none;
+}
+.btn svg {
+  flex-shrink: 0;
+  width: 0.875rem;
+  height: 0.875rem;
+}
 #btn-save,
 #btn-new      { min-width: 4.75rem; justify-content: center; }
 #t-btn-save,
@@ -113,8 +143,8 @@ body {
   max-width: 28.75rem;
   width: calc(100% - 3rem);
   padding: 1rem 1.25rem;
-  background: color-mix(in srgb, #d95c72 9%, var(--cream-surface-strong));
-  border: 1px solid color-mix(in srgb, #d95c72 32%, transparent);
+  background: color-mix(in srgb, var(--error-color) 9%, var(--cream-surface-strong));
+  border: 1px solid color-mix(in srgb, var(--error-color) 32%, transparent);
   border-radius: 0.625rem;
   font-size: 0.85rem;
   line-height: 1.7;
@@ -129,9 +159,12 @@ body {
   border: 1px solid var(--cream-border);
   border-radius: 0.375rem;
   overflow: hidden;
+  box-shadow:
+    0 1px 2px rgba(55, 38, 12, 0.10),
+    inset 0 1px 0 rgba(255, 255, 255, 0.45);
 }
 .lang-switch button {
-  padding: 0.25rem 0.625rem;
+  padding: 0.3rem 0.625rem;
   border: none;
   background: transparent;
   color: var(--cream-subtle);
@@ -162,7 +195,10 @@ body {
   align-items: center;
   justify-content: center;
   gap: 1.25rem;
-  background: var(--canvas-bg);
+  padding-bottom: 6%;
+  background:
+    linear-gradient(to bottom, rgba(55, 38, 12, 0.08), rgba(55, 38, 12, 0) 4px),
+    var(--canvas-bg);
 }
 .canvas-area::before {
   content: '';
@@ -172,6 +208,7 @@ body {
     linear-gradient(rgba(197,122,42,0.15) 1px, transparent 1px),
     linear-gradient(90deg, rgba(197,122,42,0.15) 1px, transparent 1px);
   background-size: 28px 28px;
+  background-position: center center;
   pointer-events: none;
   z-index: 0;
 }
@@ -190,16 +227,18 @@ body {
   gap: 1.25rem;
   width: min(27.5rem, 78%);
   padding: 3.25rem 2.75rem;
-  border: 1.5px dashed var(--cream-border);
   border-radius: 0.625rem;
   background: var(--cream-surface);
+  box-shadow: 0 1px 3px rgba(55, 38, 12, 0.06), 0 4px 16px rgba(55, 38, 12, 0.07);
   cursor: pointer;
-  transition: background .18s, border-color .18s;
+  transition: background .18s, box-shadow .18s;
 }
-.drop-idle:hover,
+.drop-idle:hover {
+  background: var(--cream-surface-strong);
+}
 .drop-idle.drag-over {
   background: var(--cream-surface-strong);
-  border-color: var(--accent-bd);
+  box-shadow: 0 1px 3px rgba(55, 38, 12, 0.08), 0 4px 16px rgba(55, 38, 12, 0.10), 0 0 0 3px var(--accent-bg);
 }
 .drop-circle {
   display: flex;
@@ -217,7 +256,12 @@ body {
   border-color: var(--accent);
   background: var(--accent-bg);
 }
-.drop-circle svg { color: var(--text-light-2); transition: color .18s; width: 1.5rem; height: 1.5rem; }
+.drop-circle svg {
+  color: var(--text-light-2);
+  transition: color .18s;
+  width: 1.5rem;
+  height: 1.5rem;
+}
 .drop-idle:hover .drop-circle svg,
 .drop-idle.drag-over .drop-circle svg { color: var(--accent); }
 .drop-label { font-size: 1rem; color: var(--text-light); }
@@ -275,21 +319,28 @@ kbd {
 }
 .viewer.comparing-active { cursor: none; }
 
-#cv-after { z-index: 1; clip-path: inset(0 0 0 0%); will-change: clip-path; }
+#cv-after {
+  z-index: 1;
+  clip-path: inset(0 0 0 0%);
+  will-change: clip-path;
+}
 
 /* ── Reveal divider — cursor-tracked, no handle, no pointer events */
+.viewer-divider,
+#bot-bar::after {
+  width: 2px;
+  transform: translateX(-50%);
+  background: var(--divider-color);
+  box-shadow: var(--divider-shadow);
+  pointer-events: none;
+  opacity: 0;
+}
 .viewer-divider {
   position: absolute;
   top: 0;
   bottom: 0;
   left: -200px;
-  width: 2px;
-  transform: translateX(-50%);
-  background: rgba(255,255,255,0.90);
-  box-shadow: 0 0 0 1px rgba(0,0,0,0.12), 0 0 14px rgba(0,0,0,0.28);
-  pointer-events: none;
   z-index: 4;
-  opacity: 0;
   transition: opacity 0.10s;
 }
 .viewer.reveal-active .viewer-divider { opacity: 1; }
@@ -309,13 +360,7 @@ kbd {
   top: 0;
   bottom: 0;
   left: var(--divider-x, 0px);
-  width: 2px;
-  transform: translateX(-50%);
-  background: rgba(255,255,255,0.90);
-  box-shadow: 0 0 0 1px rgba(0,0,0,0.12), 0 0 14px rgba(0,0,0,0.28);
-  pointer-events: none;
   z-index: 1;
-  opacity: 0;
   transition: opacity 0.3s;
 }
 #bot-bar.bot-bar-visible::after { opacity: 1; }
@@ -342,15 +387,27 @@ kbd {
   right: calc(100% - var(--divider-x, 0px));
   background: rgba(40, 30, 12, 0.07);
 }
-#t-label-after { left: var(--divider-x, 0px); right: 0; }
+#t-label-after {
+  left: var(--divider-x, 0px);
+  right: 0;
+}
 #bot-bar.bot-bar-visible #t-label-before,
 #bot-bar.bot-bar-visible #t-label-after { opacity: 1; }
 
-/* ── Drop description */
-.drop-desc {
+/* ── Drop secondary (desc + hints grouped below drop zone) */
+#drop-secondary {
   position: relative;
   z-index: 1;
-  max-width: 28em;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1rem;
+  margin-top: 0.5rem;
+  width: min(27.5rem, 78%);
+}
+
+/* ── Drop description */
+.drop-desc {
   text-align: center;
   line-height: 1.65;
   font-size: 0.875rem;
@@ -358,19 +415,18 @@ kbd {
   font-style: italic;
 }
 
-/* ── Controls hint */
+/* ── Controls hint — anchored to a fixed center seam, immune to translation width changes */
 #controls-hint {
-  position: relative;
-  z-index: 1;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0.375rem 1.125rem;
+  column-gap: 1.125rem;
+  row-gap: 0.375rem;
   align-items: baseline;
   font-size: 0.78rem;
-  width: 28em;
+  width: 100%;
 }
-.hint-desc { color: var(--cream-muted); text-align: right; }
-.hint-key  { color: var(--cream-subtle); white-space: nowrap; }
+.hint-desc { color: var(--cream-muted);   text-align: right; }
+.hint-key  { color: var(--cream-subtle);  text-align: left; white-space: nowrap; }
 
 /* ── Notice */
 #notice {
@@ -396,40 +452,31 @@ kbd {
   font-size: 0.75rem;
 }
 
-/* ── View label (mobile before/after indicator) */
-#view-label {
+/* ── Pill labels (view-label + mobile tap hint) */
+#view-label,
+#mob-tap-hint {
   position: absolute;
   z-index: 10;
-  top: 0.875rem;
-  left: 0.875rem;
   padding: 0.25rem 0.6875rem;
   border-radius: 1.25rem;
   background: var(--cream-surface-strong);
   border: 1px solid var(--cream-border);
   font-size: 0.75rem;
   color: var(--text-light-2);
-  min-width: 5.5em;
-  text-align: center;
   pointer-events: none;
   display: none;
 }
-
-/* ── Mobile tap hint */
+#view-label {
+  top: 0.875rem;
+  left: 0.875rem;
+  min-width: 5.5em;
+  text-align: center;
+}
 #mob-tap-hint {
-  position: absolute;
-  z-index: 10;
   bottom: 0.875rem;
   left: 50%;
   transform: translateX(-50%);
-  padding: 0.25rem 0.875rem;
-  border-radius: 1.25rem;
-  background: var(--cream-surface-strong);
-  border: 1px solid var(--cream-border);
-  font-size: 0.75rem;
-  color: var(--text-light-2);
   white-space: nowrap;
-  pointer-events: none;
-  display: none;
 }
 
 /* ── Mobile action bar */
