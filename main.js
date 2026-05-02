@@ -470,6 +470,24 @@ function buildTileInput(lumaImg, w, h, x0, y0, x1, y1) {
   return { luma, pw, ph, tw, th };
 }
 
+// Per-axis sum of feather weights, inverted in place. Tile coverage weight at
+// (x,y) factors as Wx(x)·Wy(y) over the rectangular tile grid, so the inverse
+// can be built from two 1D arrays instead of a w·h lookup table.
+function buildAxisInv(axisLen, starts) {
+  const sums = new Float32Array(axisLen);
+  for (const s of starts) {
+    const a0 = Math.max(0, s - OVL);
+    const a1 = Math.min(axisLen, s + TILE + OVL);
+    const len = a1 - a0;
+    const atStart = a0 === 0;
+    const atEnd   = a1 === axisLen;
+    for (let x = 0; x < len; x++)
+      sums[a0 + x] += featherW(x, atStart, OVL) * featherW(len - 1 - x, atEnd, OVL);
+  }
+  for (let i = 0; i < axisLen; i++) sums[i] = 1 / sums[i];
+  return sums;
+}
+
 async function runDenoiser(pixels, w, h, gen) {
   const inputName  = ortSession.inputNames[0];
   const outputName = ortSession.outputNames[0];
@@ -482,65 +500,19 @@ async function runDenoiser(pixels, w, h, gen) {
     lumaImg[i] = Y_R_INV255 * pixels[pi] + Y_G_INV255 * pixels[pi + 1] + Y_B_INV255 * pixels[pi + 2];
   }
 
-  // Weighted luma accumulator. accumW (the matching weight sum) is replaced by
-  // invW below — feather weights depend only on tile geometry, so we can sum
-  // them once up front and skip the per-pixel weight write in the main pass.
-  const accumY = new Float32Array(w * h);
-
+  // ── Per-axis inverse feather weights (separable; replaces a w·h table) ──
   const xs = tileStarts(w, TILE);
   const ys = tileStarts(h, TILE);
+  const invWx = buildAxisInv(w, xs);
+  const invWy = buildAxisInv(h, ys);
+
+  // ── Inference: per-tile model run, feathered accumulation into accumY ──
+  const accumY = new Float32Array(w * h);
+  const maxDim = TILE + 2 * OVL;
+  const wx    = new Float32Array(maxDim);  // scratch reused across tiles
+  const wyArr = new Float32Array(maxDim);
   const total = xs.length * ys.length;
   let done = 0;
-
-  // Reused across tiles to avoid per-tile Float32Array allocations.
-  const maxDim = TILE + 2 * OVL;
-  const wx    = new Float32Array(maxDim);
-  const wyArr = new Float32Array(maxDim);
-
-  // ── Pre-pass: sum feather weights into invW, then invert ───────────────
-  // Composite multiplies by invW instead of dividing by accumW (much cheaper),
-  // and the main pass below skips the per-pixel `accumW += wi` write entirely.
-  // Each row is split on the x-axis into ramp / interior / ramp; rows are
-  // split on the y-axis the same way, so wherever wx or wy is exactly 1 the
-  // multiplication drops out.
-  const invW = new Float32Array(w * h);
-  let prepDone = 0;
-  for (const ty of ys) {
-    for (const tx of xs) {
-      const { x0, y0, tw, th, xRampL, xRampR, yRampL, yRampR } = tileLayout(tx, ty, w, h, wx, wyArr);
-      // Top ramp rows (wy < 1)
-      for (let y = 0; y < yRampL; y++) {
-        const wy = wyArr[y];
-        const dst = (y0 + y) * w + x0;
-        for (let x = 0;       x < xRampL; x++) invW[dst + x] += wy * wx[x];
-        for (let x = xRampL;  x < xRampR; x++) invW[dst + x] += wy;
-        for (let x = xRampR;  x < tw;     x++) invW[dst + x] += wy * wx[x];
-      }
-      // Interior rows (wy === 1)
-      for (let y = yRampL; y < yRampR; y++) {
-        const dst = (y0 + y) * w + x0;
-        for (let x = 0;       x < xRampL; x++) invW[dst + x] += wx[x];
-        for (let x = xRampL;  x < xRampR; x++) invW[dst + x] += 1;
-        for (let x = xRampR;  x < tw;     x++) invW[dst + x] += wx[x];
-      }
-      // Bottom ramp rows (wy < 1)
-      for (let y = yRampR; y < th; y++) {
-        const wy = wyArr[y];
-        const dst = (y0 + y) * w + x0;
-        for (let x = 0;       x < xRampL; x++) invW[dst + x] += wy * wx[x];
-        for (let x = xRampL;  x < xRampR; x++) invW[dst + x] += wy;
-        for (let x = xRampR;  x < tw;     x++) invW[dst + x] += wy * wx[x];
-      }
-      // Yield occasionally so the pre-pass can't freeze the UI on huge images.
-      if ((++prepDone & 7) === 0) {
-        await tick();
-        if (gen !== _loadGen) return null;
-      }
-    }
-  }
-  for (let i = 0; i < invW.length; i++) invW[i] = 1 / invW[i];
-
-  // ── Main pass: model inference + accumulation into accumY ──────────────
   for (const ty of ys) {
     for (const tx of xs) {
       const { x0, y0, x1, y1, tw, th, xRampL, xRampR, yRampL, yRampR } = tileLayout(tx, ty, w, h, wx, wyArr);
@@ -550,8 +522,7 @@ async function runDenoiser(pixels, w, h, gen) {
       if (gen !== _loadGen) return null;
       const outData = results[outputName].data;
 
-      // Mirrors the invW pre-pass: drop wx and/or wy multiplications wherever
-      // the corresponding feather weight is exactly 1.
+      // Drop wx and/or wy multiplications wherever the feather weight is 1.
       for (let y = 0; y < yRampL; y++) {
         const wy = wyArr[y];
         const dst = (y0 + y) * w + x0;
@@ -596,11 +567,12 @@ async function runDenoiser(pixels, w, h, gen) {
     const ditherG = ((py + 19) & 63) * 64;
     const ditherB = ((py + 41) & 63) * 64;
     const rowBase = py * w;
+    const invWy_y = invWy[py];
     for (let px = 0; px < w; px++) {
       const i = rowBase + px;
       const pi = i * 4;
       const r = pixels[pi], g = pixels[pi + 1], b = pixels[pi + 2];
-      const deltaY255 = (accumY[i] * invW[i] - lumaImg[i]) * 255;
+      const deltaY255 = (accumY[i] * invWx[px] * invWy_y - lumaImg[i]) * 255;
       const dR = blueNoiseF32[ditherR +  (px        & 63)];
       const dG = blueNoiseF32[ditherG + ((px + 17)  & 63)];
       const dB = blueNoiseF32[ditherB + ((px + 37)  & 63)];
@@ -713,10 +685,18 @@ function applyViewerState() {
   }
 }
 
+// renderViewer is called once on load and again when denoise completes; the
+// inputImg is unchanged on the second call, so skip its repaint. (Reassigning
+// canvas.width clears the canvas even when the value matches, which would
+// otherwise force a redundant putImageData of the full original image.)
+let _cvBeforeRenderedImg = null;
 function renderViewer() {
   invalidateCvAfterRect();
-  cvBefore.width  = S.inputImg.width;  cvBefore.height = S.inputImg.height;
-  cvBeforeCtx.putImageData(S.inputImg, 0, 0);
+  if (S.inputImg !== _cvBeforeRenderedImg) {
+    cvBefore.width  = S.inputImg.width;  cvBefore.height = S.inputImg.height;
+    cvBeforeCtx.putImageData(S.inputImg, 0, 0);
+    _cvBeforeRenderedImg = S.inputImg;
+  }
   if (S.denoisedImg) {
     cvAfter.width  = S.denoisedImg.width; cvAfter.height = S.denoisedImg.height;
     cvAfterCtx.putImageData(S.denoisedImg, 0, 0);
@@ -1120,6 +1100,7 @@ function clearImage() {
   if (!S.inputImg) return;
   _loadGen++;
   S.inputImg = null; S.denoisedImg = null; S.showingBefore = false;
+  _cvBeforeRenderedImg = null;
   S.comparing = false; S.pointerDown = false; S.lastCursorX = null; S.cursorInViewer = false;
   resetZoom();
   showDropZone();
