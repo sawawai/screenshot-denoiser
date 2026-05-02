@@ -11,28 +11,65 @@
 }
 
 :root {
+  /* ── Layout */
   --hdr-h: 2.75rem;
-  --body-bg:   #111213;
-  --canvas-bg: #ede8de;
-  --text-dark:    rgba(40, 30, 12, 0.82);
+
+  /* ── Type */
+  --font-ui: 'Noto Sans JP', sans-serif;
+
+  /* ── Motion */
+  --t-fast: .12s;
+  --t-base: .18s;
+  --t-slow: .30s;
+
+  /* ── Tone bases (rgb triplets, consumed via rgb(var(--tone-x) / a)) */
+  --tone-text:   40 30 12;    /* warm near-black for text + overlays */
+  --tone-cream:  120 105 75;  /* mid-warm for borders + subtle fills */
+  --tone-shadow: 55 38 12;    /* warm shadow base */
+
+  /* ── Surfaces */
+  --body-bg:              #111213;
+  --canvas-bg:            #ede8de;
+  --cream-surface:        rgb(255 251 244 / .70);
+  --cream-surface-strong: rgb(255 251 244 / .88);
+  --kbd-bg:               rgb(175 155 120 / .16);
+
+  /* ── Borders */
+  --cream-border: rgb(var(--tone-cream) / .32);
+  --border-dim:   rgb(var(--tone-cream) / .20);
+
+  /* ── Text */
+  --text-dark:    rgb(var(--tone-text) / .82);
   --text-light:   #1c2138;
   --text-light-2: #4b5175;
-  --accent:      #c57a2a;
-  --accent-dim:  color-mix(in srgb, var(--accent) 78%, white);
-  --accent-bg:   color-mix(in srgb, var(--accent) 14%, transparent);
-  --accent-bd:   color-mix(in srgb, var(--accent) 40%, transparent);
-  --white: #ffffff;
-  --cream-surface:        rgba(255, 251, 244, 0.70);
-  --cream-surface-strong: rgba(255, 251, 244, 0.88);
-  --cream-border:         rgba(120, 105, 75, 0.32);
-  --cream-muted:          rgba(40, 30, 12, 0.50);
-  --cream-subtle:         rgba(40, 30, 12, 0.36);
-  --border-dim:           rgba(120, 105, 75, 0.20);
-  --kbd-bg:               rgba(175, 155, 120, 0.16);
-  --error-color:          #d95c72;
-  --divider-color:        rgba(255, 255, 255, 0.90);
-  --divider-shadow:       0 0 0 1px rgba(0, 0, 0, 0.12), 0 0 14px rgba(0, 0, 0, 0.28);
-  --font-ui: 'Noto Sans JP', sans-serif;
+  --cream-muted:  rgb(var(--tone-text) / .50);
+  --cream-subtle: rgb(var(--tone-text) / .36);
+
+  /* ── Accent */
+  --accent:     #c57a2a;
+  --accent-dim: color-mix(in srgb, var(--accent) 78%, white);
+  --accent-bg:  color-mix(in srgb, var(--accent) 14%, transparent);
+
+  /* ── Status */
+  --error-color: #d95c72;
+
+  /* ── Reveal divider */
+  --divider-color:  rgb(255 255 255 / .90);
+  --divider-shadow: 0 0 0 1px rgb(0 0 0 / .12), 0 0 14px rgb(0 0 0 / .28);
+
+  /* ── Shadows */
+  --shadow-raised:
+    0 1px 2px rgb(var(--tone-shadow) / .10),
+    inset 0 1px 0 rgb(255 255 255 / .45);
+  --shadow-raised-active:
+    0 1px 2px rgb(var(--tone-shadow) / .18),
+    inset 0 1px 0 rgb(255 255 255 / .20);
+  --shadow-card:
+    0 1px 3px rgb(var(--tone-shadow) / .06),
+    0 4px 16px rgb(var(--tone-shadow) / .07);
+  --shadow-card-hover:
+    0 1px 3px rgb(var(--tone-shadow) / .08),
+    0 4px 16px rgb(var(--tone-shadow) / .10);
 }
 
 html {
@@ -99,22 +136,21 @@ body {
   line-height: 1;
   white-space: nowrap;
   cursor: pointer;
-  box-shadow:
-    0 1px 2px rgba(55, 38, 12, 0.10),
-    inset 0 1px 0 rgba(255, 255, 255, 0.45);
-  transition: background .12s, border-color .12s, box-shadow .12s;
+  box-shadow: var(--shadow-raised);
+  transition:
+    background var(--t-fast),
+    border-color var(--t-fast),
+    box-shadow var(--t-fast);
 }
 .btn:hover:not(:disabled) {
   background: var(--cream-surface-strong);
-  border-color: rgba(120, 105, 75, 0.52);
+  border-color: rgb(var(--tone-cream) / .52);
 }
 .btn.active {
   background: var(--accent);
   border-color: var(--accent);
-  color: var(--white);
-  box-shadow:
-    0 1px 2px rgba(55, 38, 12, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.20);
+  color: white;
+  box-shadow: var(--shadow-raised-active);
 }
 .btn:disabled {
   cursor: default;
@@ -161,9 +197,7 @@ body {
   border: 1px solid var(--cream-border);
   border-radius: 0.375rem;
   overflow: hidden;
-  box-shadow:
-    0 1px 2px rgba(55, 38, 12, 0.10),
-    inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  box-shadow: var(--shadow-raised);
 }
 .lang-switch button {
   padding: 0.3rem 0.625rem;
@@ -175,15 +209,15 @@ body {
   font-weight: 500;
   line-height: 1;
   cursor: pointer;
-  transition: background .12s, color .12s;
+  transition: background var(--t-fast), color var(--t-fast);
 }
 .lang-switch button + button { border-left: 1px solid var(--cream-border); }
 .lang-switch button:hover:not(.active) {
-  background: rgba(120, 105, 75, 0.10);
+  background: rgb(var(--tone-cream) / .10);
   color: var(--cream-muted);
 }
 .lang-switch button.active {
-  background: rgba(120, 105, 75, 0.16);
+  background: rgb(var(--tone-cream) / .16);
   color: var(--text-dark);
 }
 
@@ -199,7 +233,7 @@ body {
   gap: 1.25rem;
   padding-bottom: 6%;
   background:
-    linear-gradient(to bottom, rgba(55, 38, 12, 0.08), rgba(55, 38, 12, 0) 4px),
+    linear-gradient(to bottom, rgb(var(--tone-shadow) / .08), transparent 4px),
     var(--canvas-bg);
 }
 .canvas-area::before {
@@ -207,10 +241,10 @@ body {
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(rgba(197,122,42,0.15) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(197,122,42,0.15) 1px, transparent 1px);
+    linear-gradient(rgb(197 122 42 / .15) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(197 122 42 / .15) 1px, transparent 1px);
   background-size: 28px 28px;
-  background-position: center 0;
+  background-position: center;
   pointer-events: none;
   z-index: 0;
 }
@@ -231,16 +265,16 @@ body {
   padding: 3.25rem 2.75rem;
   border-radius: 0.625rem;
   background: var(--cream-surface);
-  box-shadow: 0 1px 3px rgba(55, 38, 12, 0.06), 0 4px 16px rgba(55, 38, 12, 0.07);
+  box-shadow: var(--shadow-card);
   cursor: pointer;
-  transition: background .18s, box-shadow .18s;
+  transition: background var(--t-base), box-shadow var(--t-base);
 }
 .drop-idle:hover {
   background: var(--cream-surface-strong);
 }
 .drop-idle.drag-over {
   background: var(--cream-surface-strong);
-  box-shadow: 0 1px 3px rgba(55, 38, 12, 0.08), 0 4px 16px rgba(55, 38, 12, 0.10), 0 0 0 3px var(--accent-bg);
+  box-shadow: var(--shadow-card-hover), 0 0 0 3px var(--accent-bg);
 }
 .drop-circle {
   display: flex;
@@ -251,7 +285,7 @@ body {
   border: 1.5px solid var(--cream-border);
   border-radius: 50%;
   background: var(--cream-surface);
-  transition: border-color .18s, background .18s;
+  transition: border-color var(--t-base), background var(--t-base);
 }
 .drop-idle:hover .drop-circle,
 .drop-idle.drag-over .drop-circle {
@@ -259,10 +293,10 @@ body {
   background: var(--accent-bg);
 }
 .drop-circle svg {
-  color: var(--text-light-2);
-  transition: color .18s;
   width: 1.5rem;
   height: 1.5rem;
+  color: var(--text-light-2);
+  transition: color var(--t-base);
 }
 .drop-idle:hover .drop-circle svg,
 .drop-idle.drag-over .drop-circle svg { color: var(--accent); }
@@ -317,7 +351,9 @@ kbd {
   transform: translate(-50%, -50%);
   display: block;
   image-rendering: auto;
-  box-shadow: 0 2px 12px rgba(55, 38, 12, 0.18), 0 10px 40px rgba(38, 24, 4, 0.15);
+  box-shadow:
+    0 2px 12px rgb(var(--tone-shadow) / .18),
+    0 10px 40px rgb(38 24 4 / .15);
 }
 .viewer.comparing-active { cursor: none; }
 
@@ -363,31 +399,31 @@ kbd {
   bottom: 0;
   left: var(--divider-x, 0px);
   z-index: 1;
-  transition: opacity 0.3s;
+  transition: opacity var(--t-slow);
 }
 #bot-bar.bot-bar-visible::after { opacity: 1; }
 #t-label-before,
 #t-label-after {
-  opacity: 0;
-  transition: opacity 0.3s;
   position: absolute;
   top: 0;
   bottom: 0;
-  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
   font-size: 0.78rem;
   font-weight: 500;
   letter-spacing: 0.03em;
   color: var(--cream-muted);
-  pointer-events: none;
   white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--t-slow);
 }
 #t-label-before {
   left: 0;
   right: calc(100% - var(--divider-x, 0px));
-  background: rgba(40, 30, 12, 0.07);
+  background: rgb(var(--tone-text) / .07);
 }
 #t-label-after {
   left: var(--divider-x, 0px);
@@ -446,6 +482,7 @@ kbd {
   color: var(--text-light);
   text-align: center;
 }
+#notice strong { color: var(--error-color); }
 #notice code {
   background: var(--kbd-bg);
   padding: 1px 0.375rem;
@@ -515,7 +552,7 @@ kbd {
   flex-shrink: 0;
   height: 3px;
   overflow: hidden;
-  background: color-mix(in srgb, rgb(120, 105, 75) 12%, var(--canvas-bg));
+  background: color-mix(in srgb, rgb(120 105 75) 12%, var(--canvas-bg));
   z-index: 10;
 }
 #prog-bar {

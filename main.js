@@ -16,6 +16,10 @@ const S = {
   saveName: 'denoised.png',
 };
 
+// Bumped on every loadFile / clearImage; in-flight async denoise compares
+// against this to bail out when the user replaces or clears the image.
+let _loadGen = 0;
+
 // ─── DOM ─────────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 const isMobile = window.matchMedia('(pointer: coarse)').matches;
@@ -36,8 +40,6 @@ const btnSave      = $('btn-save');
 const btnNew       = $('btn-new');
 const mobSave      = $('mob-save');
 const mobNew       = $('mob-new');
-const controlsHint  = $('controls-hint');
-const tDropDesc     = $('t-drop-desc');
 const dropSecondary = $('drop-secondary');
 const tDropLabel   = $('t-drop-label');
 const tDropSub     = $('t-drop-sub');
@@ -122,10 +124,10 @@ const TX = {
 let lang = 'ja';
 function t(k) { return TX[lang][k] ?? k; }
 
+// Drop-label/sub are NOT here — they have mobile and loading-state variants,
+// and applyLang() picks the right key for them in one place.
 const tMap = {
   't-title':      'title',
-  't-drop-label': 'drop-label',
-  't-drop-sub':   'drop-sub',
   't-btn-save':   'btn-save',
   't-btn-new':    'btn-new',
   't-label-before':  'label-before',
@@ -161,6 +163,11 @@ function applyLang() {
   document.documentElement.lang = lang;
   document.title = t('title');
   for (const [el, key] of _tEntries) el.innerHTML = t(key);
+  // drop-label/sub vary by mobile vs desktop, and the label is overridden again
+  // while the model is still loading.
+  const loading = dropIdle.classList.contains('model-loading');
+  tDropLabel.innerHTML = t(loading ? 'drop-label-loading' : (isMobile ? 'drop-label-mobile' : 'drop-label'));
+  tDropSub.innerHTML   = t(isMobile ? 'drop-sub-mobile' : 'drop-sub');
   _langButtons.forEach(b => {
     const active = b.dataset.lang === lang;
     b.classList.toggle('active', active);
@@ -168,13 +175,7 @@ function applyLang() {
   });
   if (_langSwitch) _langSwitch.setAttribute('aria-label', t('lang-aria'));
   for (const [el, key] of _ariaButtons) el.setAttribute('aria-label', t(key));
-  if (isMobile) {
-    tDropLabel.innerHTML = t('drop-label-mobile');
-    tDropSub.innerHTML   = t('drop-sub-mobile');
-    updateViewLabel();
-  }
-  if (dropIdle.classList.contains('model-loading'))
-    tDropLabel.textContent = t('drop-label-loading');
+  if (isMobile) updateViewLabel();
 }
 
 function setLang(l) {
@@ -192,8 +193,6 @@ function getCookie(name) {
   const v = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith(name + '='));
   return v ? v.split('=')[1] : null;
 }
-
-let _loadGen = 0;
 
 // ─── colour constants ───────────────────────────────────────────────────────
 // BT.709 luma + reciprocals so hot loops can multiply instead of divide.
@@ -472,8 +471,6 @@ function buildTileInput(lumaImg, w, h, x0, y0, x1, y1) {
 }
 
 async function runDenoiser(pixels, w, h, gen) {
-  if (!ortReady) throw new Error(t('model-not-ready'));
-
   const inputName  = ortSession.inputNames[0];
   const outputName = ortSession.outputNames[0];
 
@@ -1047,10 +1044,11 @@ async function processAndShow(imgData, gen) {
 }
 
 // ─── drop / paste / click ─────────────────────────────────────────────────────
+// Single drop handler at the document level: drops anywhere are accepted, and
+// the dropIdle element only owns drag-over visual feedback.
 dropIdle.addEventListener('click', () => fileInput.click());
 dropIdle.addEventListener('dragover',  e => { e.preventDefault(); dropIdle.classList.add('drag-over'); });
 dropIdle.addEventListener('dragleave', ()  => dropIdle.classList.remove('drag-over'));
-dropIdle.addEventListener('drop', e => { e.preventDefault(); e.stopPropagation(); dropIdle.classList.remove('drag-over'); loadFile(e.dataTransfer.files[0]); });
 fileInput.addEventListener('change', e => { loadFile(e.target.files[0]); e.target.value = ''; });
 document.addEventListener('paste', e => {
   for (const item of (e.clipboardData?.items || []))
@@ -1058,7 +1056,12 @@ document.addEventListener('paste', e => {
 });
 document.addEventListener('dragenter', e => e.preventDefault());
 document.addEventListener('dragover',  e => e.preventDefault());
-document.addEventListener('drop', e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) loadFile(f); });
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  dropIdle.classList.remove('drag-over');
+  const f = e.dataTransfer?.files[0];
+  if (f) loadFile(f);
+});
 
 // ─── actions ──────────────────────────────────────────────────────────────────
 function resetToNative() {
@@ -1178,13 +1181,12 @@ function setProgressIndeterminate() {
 // MessageChannel postMessage round-trips faster than setTimeout(0), which the
 // HTML spec lets browsers clamp to ~1-4 ms. With many tiles the saved overhead
 // adds up to hundreds of ms.
-const _yieldPort = (() => {
+const tick = (() => {
   const ch = new MessageChannel();
   const queue = [];
-  ch.port1.onmessage = () => { const r = queue.shift(); if (r) r(); };
-  return r => { queue.push(r); ch.port2.postMessage(0); };
+  ch.port1.onmessage = () => queue.shift()?.();
+  return () => new Promise(r => { queue.push(r); ch.port2.postMessage(0); });
 })();
-function tick() { return new Promise(_yieldPort); }
 
 // ─── startup ──────────────────────────────────────────────────────────────────
 async function warmUp() {
@@ -1195,7 +1197,7 @@ async function warmUp() {
 
 async function main() {
   dropIdle.classList.add('model-loading');
-  tDropLabel.textContent = t('drop-label-loading');
+  applyLang(); // picks up the drop-label-loading variant
   setProgressIndeterminate();
   try {
     await loadModel();
